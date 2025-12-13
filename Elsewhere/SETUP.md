@@ -41,18 +41,31 @@ Add Firebase to your Xcode project:
 
 ### 4. Configure OpenAI API Key
 
+**⚠️ IMPORTANT: Never commit your API key to git!**
+
 1. Get your API key from [OpenAI Platform](https://platform.openai.com/api-keys)
-2. Add to `Info.plist`:
 
-   - Open `Info.plist` in Xcode
-   - Add new key: `OPENAI_API_KEY` (type: String)
-   - Set value to your API key
+2. **Option A: Add to Info.plist (Local only)**
 
-   **OR** use environment variables:
+   - Open `Info.plist` in Xcode (located at `Elsewhere/Elsewhere/Info.plist`)
+   - Find the `OPENAI_API_KEY` key
+   - Replace `YOUR_API_KEY_HERE` with your actual API key
+   - **Note:** `Info.plist` is in `.gitignore` so it won't be committed
 
-   - Add to your scheme's environment variables
-   - Key: `OPENAI_API_KEY`
+3. **Option B: Use Environment Variables (Recommended)**
+   - In Xcode, go to **Product > Scheme > Edit Scheme...**
+   - Select **Run** in the left sidebar
+   - Go to the **Arguments** tab
+   - Under **Environment Variables**, click **+**
+   - Name: `OPENAI_API_KEY`
    - Value: Your API key
+   - Click **Close**
+
+**Security Note:** If you already committed your API key:
+
+1. **Revoke the exposed key** immediately at [OpenAI Platform](https://platform.openai.com/api-keys)
+2. Generate a new API key
+3. The key has been removed from the committed file and added to `.gitignore`
 
 ### 5. Firestore Security Rules (Initial Setup)
 
