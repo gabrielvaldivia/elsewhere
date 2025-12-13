@@ -8,9 +8,23 @@
 import SwiftUI
 
 struct ChatView: View {
-    @State private var messages: [ChatMessage] = []
+    @ObservedObject var appState: AppState
+    @StateObject private var viewModel: ChatViewModel
+    
     @State private var inputText: String = ""
-    @State private var isTyping: Bool = false
+    
+    init(appState: AppState) {
+        self.appState = appState
+        // For Phase 1 MVP: Use placeholder IDs until auth/house setup is complete
+        // Wait a moment for authentication to complete
+        let houseId = appState.currentHouse?.id ?? "placeholder-house-id"
+        let userId = appState.currentUser?.id ?? "placeholder-user-id"
+        _viewModel = StateObject(wrappedValue: ChatViewModel(
+            houseId: houseId,
+            userId: userId,
+            houseProfile: appState.houseProfile
+        ))
+    }
     
     var body: some View {
         NavigationStack {
@@ -19,19 +33,19 @@ struct ChatView: View {
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 12) {
-                            ForEach(messages) { message in
+                            ForEach(viewModel.messages) { message in
                                 MessageBubble(message: message)
                                     .id(message.id)
                             }
                             
-                            if isTyping {
+                            if viewModel.isTyping {
                                 TypingIndicator()
                             }
                         }
                         .padding()
                     }
-                    .onChange(of: messages.count) { _, _ in
-                        if let lastMessage = messages.last {
+                    .onChange(of: viewModel.messages.count) { _, _ in
+                        if let lastMessage = viewModel.messages.last {
                             withAnimation {
                                 proxy.scrollTo(lastMessage.id, anchor: .bottom)
                             }
@@ -46,49 +60,60 @@ struct ChatView: View {
                     TextField("Ask about your house...", text: $inputText, axis: .vertical)
                         .textFieldStyle(.roundedBorder)
                         .lineLimit(1...4)
+                        .disabled(appState.isAuthenticating)
                     
                     Button(action: sendMessage) {
                         Image(systemName: "arrow.up.circle.fill")
                             .font(.title2)
-                            .foregroundColor(inputText.isEmpty ? .gray : .blue)
+                            .foregroundColor(inputText.isEmpty || appState.isAuthenticating ? .gray : .blue)
                     }
-                    .disabled(inputText.isEmpty || isTyping)
+                    .disabled(inputText.isEmpty || viewModel.isTyping || appState.isAuthenticating)
                 }
                 .padding()
+                .overlay {
+                    if appState.isAuthenticating {
+                        ProgressView()
+                            .scaleEffect(0.8)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                            .padding(.trailing, 16)
+                    }
+                }
             }
             .navigationTitle("Chat")
             .navigationBarTitleDisplayMode(.inline)
+        }
+        .onChange(of: appState.houseProfile) { _, newProfile in
+            viewModel.setHouseProfile(newProfile)
+        }
+        .onChange(of: appState.isAuthenticated) { _, isAuthenticated in
+            // Update view model when authentication completes
+            if isAuthenticated, let userId = appState.currentUser?.id {
+                viewModel.updateUserId(userId)
+            }
+        }
+        .onChange(of: appState.currentUser?.id) { _, newUserId in
+            // Update view model when user ID changes
+            if let userId = newUserId, userId != "placeholder-user-id" {
+                viewModel.updateUserId(userId)
+            }
+        }
+        .alert("Error", isPresented: .constant(viewModel.errorMessage != nil)) {
+            Button("OK") {
+                viewModel.errorMessage = nil
+            }
+        } message: {
+            if let error = viewModel.errorMessage {
+                Text(error)
+            }
         }
     }
     
     private func sendMessage() {
         guard !inputText.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         
-        let userMessage = ChatMessage(
-            houseId: "placeholder-house-id", // TODO: Get from app state
-            userId: "placeholder-user-id", // TODO: Get from auth
-            role: .user,
-            content: inputText
-        )
-        
-        messages.append(userMessage)
         let messageToSend = inputText
         inputText = ""
-        
-        // TODO: Send to OpenAI API
-        isTyping = true
-        
-        // Simulate agent response for now
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-            let agentMessage = ChatMessage(
-                houseId: userMessage.houseId,
-                userId: userMessage.userId,
-                role: .agent,
-                content: "I understand you're asking about: \(messageToSend). This feature is coming soon!"
-            )
-            messages.append(agentMessage)
-            isTyping = false
-        }
+        viewModel.sendMessage(messageToSend)
     }
 }
 
@@ -158,6 +183,6 @@ struct TypingIndicator: View {
 }
 
 #Preview {
-    ChatView()
+    ChatView(appState: AppState())
 }
 

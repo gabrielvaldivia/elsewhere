@@ -8,7 +8,7 @@
 import Foundation
 import CoreLocation
 
-struct HouseProfile: Identifiable, Codable {
+struct HouseProfile: Identifiable, Codable, Equatable {
     var id: String
     var houseId: String
     var name: String?
@@ -51,7 +51,7 @@ struct HouseProfile: Identifiable, Codable {
     }
 }
 
-struct Location: Codable {
+struct Location: Codable, Equatable {
     var address: String
     var city: String
     var state: String
@@ -59,7 +59,7 @@ struct Location: Codable {
     var coordinates: Coordinates?
 }
 
-struct Coordinates: Codable {
+struct Coordinates: Codable, Equatable {
     var latitude: Double
     var longitude: Double
     
@@ -73,14 +73,14 @@ struct Coordinates: Codable {
     }
 }
 
-struct HouseSize: Codable {
+struct HouseSize: Codable, Equatable {
     var squareFeet: Int?
     var bedrooms: Int?
     var bathrooms: Int?
     var lotSize: Double? // Acres
 }
 
-struct HouseSystem: Identifiable, Codable {
+struct HouseSystem: Identifiable, Codable, Equatable {
     var id: String
     var type: SystemType
     var description: String?
@@ -105,7 +105,7 @@ struct HouseSystem: Identifiable, Codable {
     }
 }
 
-enum SystemType: String, CaseIterable, Codable {
+enum SystemType: String, CaseIterable, Codable, Equatable {
     case heating = "Heating"
     case cooling = "Cooling"
     case water = "Water"
@@ -120,14 +120,14 @@ enum SystemType: String, CaseIterable, Codable {
     case other = "Other"
 }
 
-struct UsagePattern: Codable {
+struct UsagePattern: Codable, Equatable {
     var occupancyFrequency: OccupancyFrequency
     var typicalStayDuration: Int? // Days
     var seasonalUsage: Bool
     var notes: String?
 }
 
-enum OccupancyFrequency: String, Codable {
+enum OccupancyFrequency: String, Codable, Equatable {
     case daily = "Daily"
     case weekly = "Weekly"
     case biweekly = "Bi-weekly"
@@ -136,7 +136,7 @@ enum OccupancyFrequency: String, Codable {
     case rarely = "Rarely"
 }
 
-struct RiskFactor: Identifiable, Codable {
+struct RiskFactor: Identifiable, Codable, Equatable {
     var id: String
     var type: RiskType
     var description: String?
@@ -155,7 +155,7 @@ struct RiskFactor: Identifiable, Codable {
     }
 }
 
-enum RiskType: String, Codable {
+enum RiskType: String, Codable, Equatable {
     case lowOccupancy = "Low Occupancy"
     case winterExposure = "Winter Exposure"
     case remoteLocation = "Remote Location"
@@ -163,19 +163,19 @@ enum RiskType: String, Codable {
     case other = "Other"
 }
 
-enum RiskSeverity: String, Codable {
+enum RiskSeverity: String, Codable, Equatable {
     case low = "Low"
     case medium = "Medium"
     case high = "High"
 }
 
-struct Seasonality: Codable {
+struct Seasonality: Codable, Equatable {
     var primarySeason: Season?
     var yearRound: Bool
     var notes: String?
 }
 
-enum Season: String, Codable {
+enum Season: String, Codable, Equatable {
     case spring = "Spring"
     case summer = "Summer"
     case fall = "Fall"

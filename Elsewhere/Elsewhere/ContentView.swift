@@ -8,19 +8,21 @@
 import SwiftUI
 
 struct ContentView: View {
+    @StateObject private var appState = AppState()
+    
     var body: some View {
         TabView {
-            ChatView()
+            ChatView(appState: appState)
                 .tabItem {
                     Label("Chat", systemImage: "message.fill")
                 }
             
-            // Placeholder for future tabs
-            Text("Profile")
+            HouseProfileView(appState: appState)
                 .tabItem {
                     Label("Profile", systemImage: "house.fill")
                 }
         }
+        .environmentObject(appState)
     }
 }
 
