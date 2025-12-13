@@ -16,13 +16,15 @@ struct HouseProfileView: View {
     @State private var state: String = ""
     @State private var zipCode: String = ""
     @State private var age: Int?
-    @State private var occupancyFrequency: OccupancyFrequency = .monthly
+    @State private var occupancyFrequency: OccupancyFrequency?
     @State private var typicalStayDuration: Int?
     @State private var systemsDict: [SystemType: HouseSystem] = [:]
     @State private var squareFeet: String = ""
+    @State private var showSquareFeet: Bool = false
     @State private var bedrooms: Int?
     @State private var bathrooms: Int?
     @State private var lotSize: String = ""
+    @State private var showLotSize: Bool = false
     
     var body: some View {
         NavigationStack {
@@ -64,21 +66,25 @@ struct HouseProfileView: View {
         state = profile.location?.state ?? ""
         zipCode = profile.location?.zipCode ?? ""
         age = profile.age
-        occupancyFrequency = profile.usagePattern?.occupancyFrequency ?? .monthly
+        occupancyFrequency = profile.usagePattern?.occupancyFrequency
         typicalStayDuration = profile.usagePattern?.typicalStayDuration
         editedProfile = profile
         
         // Load house size
         if let size = profile.size {
             squareFeet = size.squareFeet.map { String($0) } ?? ""
+            showSquareFeet = size.squareFeet != nil
             bedrooms = size.bedrooms
             bathrooms = size.bathrooms
             lotSize = size.lotSize.map { String($0) } ?? ""
+            showLotSize = size.lotSize != nil
         } else {
             squareFeet = ""
+            showSquareFeet = false
             bedrooms = nil
             bathrooms = nil
             lotSize = ""
+            showLotSize = false
         }
         
         // Load systems into dictionary
@@ -136,11 +142,19 @@ struct HouseProfileView: View {
             }
             
             Section("Size") {
-                TextField("Square Feet", text: $squareFeet)
-                    .keyboardType(.numberPad)
-                    .onSubmit {
+                if showSquareFeet {
+                    TextField("Square Feet", text: $squareFeet)
+                        .keyboardType(.numberPad)
+                        .onSubmit {
+                            saveProfile()
+                        }
+                } else {
+                    Button("Add Square Feet") {
+                        squareFeet = ""
+                        showSquareFeet = true
                         saveProfile()
                     }
+                }
                 
                 if let currentBedrooms = bedrooms {
                     Stepper("Bedrooms: \(currentBedrooms)", value: Binding(
@@ -172,23 +186,44 @@ struct HouseProfileView: View {
                     }
                 }
                 
-                TextField("Lot Size (acres)", text: $lotSize)
-                    .keyboardType(.decimalPad)
-                    .onSubmit {
+                if showLotSize {
+                    TextField("Lot Size (acres)", text: $lotSize)
+                        .keyboardType(.decimalPad)
+                        .onSubmit {
+                            saveProfile()
+                        }
+                } else {
+                    Button("Add Lot Size") {
+                        lotSize = ""
+                        showLotSize = true
                         saveProfile()
                     }
+                }
             }
             
             
             
             Section("Typical Stay") {
-                Picker("Frequency", selection: $occupancyFrequency) {
-                    ForEach([OccupancyFrequency.daily, .weekly, .biweekly, .monthly, .seasonally, .rarely], id: \.self) { freq in
-                        Text(freq.rawValue).tag(freq)
+                if let frequency = occupancyFrequency {
+                    Picker("Frequency", selection: Binding(
+                        get: { frequency },
+                        set: { newFrequency in
+                            occupancyFrequency = newFrequency
+                            saveProfile()
+                        }
+                    )) {
+                        ForEach([OccupancyFrequency.daily, .weekly, .biweekly, .monthly, .seasonally, .rarely], id: \.self) { freq in
+                            Text(freq.rawValue).tag(freq)
+                        }
                     }
-                }
-                .onChange(of: occupancyFrequency) { _, _ in
-                    saveProfile()
+                    .onChange(of: occupancyFrequency) { _, _ in
+                        saveProfile()
+                    }
+                } else {
+                    Button("Add Frequency") {
+                        occupancyFrequency = .monthly
+                        saveProfile()
+                    }
                 }
                 
                 if let duration = typicalStayDuration {
@@ -349,12 +384,12 @@ struct HouseProfileView: View {
                 
                 // Update house size
                 var houseSize = HouseSize()
-                if !squareFeet.isEmpty, let sqft = Int(squareFeet) {
+                if showSquareFeet && !squareFeet.isEmpty, let sqft = Int(squareFeet), sqft > 0 {
                     houseSize.squareFeet = sqft
                 }
                 houseSize.bedrooms = bedrooms
                 houseSize.bathrooms = bathrooms
-                if !lotSize.isEmpty, let lot = Double(lotSize) {
+                if showLotSize && !lotSize.isEmpty, let lot = Double(lotSize), lot > 0 {
                     houseSize.lotSize = lot
                 }
                 profile.size = (houseSize.squareFeet != nil || houseSize.bedrooms != nil || houseSize.bathrooms != nil || houseSize.lotSize != nil) ? houseSize : nil

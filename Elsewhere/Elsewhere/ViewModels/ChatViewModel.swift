@@ -568,8 +568,13 @@ class ChatViewModel: ObservableObject {
         case .usagePattern:
             if let usagePattern = extractUsagePattern(from: content) {
                 onboardingData.usagePattern = usagePattern
-                print("✅ Extracted usage pattern: \(usagePattern.occupancyFrequency.rawValue)")
-                print("📊 Current onboardingData - Location: \(onboardingData.location != nil), Age: \(onboardingData.age != nil), Systems: \(onboardingData.systems.count), Usage: \(usagePattern.occupancyFrequency.rawValue)")
+                if let frequency = usagePattern.occupancyFrequency {
+                    print("✅ Extracted usage pattern: \(frequency.rawValue)")
+                    print("📊 Current onboardingData - Location: \(onboardingData.location != nil), Age: \(onboardingData.age != nil), Systems: \(onboardingData.systems.count), Usage: \(frequency.rawValue)")
+                } else {
+                    print("✅ Extracted usage pattern: (none)")
+                    print("📊 Current onboardingData - Location: \(onboardingData.location != nil), Age: \(onboardingData.age != nil), Systems: \(onboardingData.systems.count), Usage: (none)")
+                }
                 Task {
                     await updateProfileIncrementally()
                 }
@@ -677,8 +682,8 @@ class ChatViewModel: ObservableObject {
         
         // Update risk factors
         profile.riskFactors = []
-        if let usagePattern = onboardingData.usagePattern {
-            if usagePattern.occupancyFrequency == .rarely || usagePattern.occupancyFrequency == .seasonally {
+        if let usagePattern = onboardingData.usagePattern, let frequency = usagePattern.occupancyFrequency {
+            if frequency == .rarely || frequency == .seasonally {
                 profile.riskFactors.append(RiskFactor(
                     type: .lowOccupancy,
                     severity: .medium
@@ -697,7 +702,7 @@ class ChatViewModel: ObservableObject {
         // Preserve the ID
         profile.id = profileId
         
-        print("💾 Updating profile - ID: \(profile.id), Location: \(profile.location?.address ?? "nil"), Age: \(profile.age?.description ?? "nil"), Systems: \(profile.systems.count), Usage: \(profile.usagePattern?.occupancyFrequency.rawValue ?? "nil")")
+        print("💾 Updating profile - ID: \(profile.id), Location: \(profile.location?.address ?? "nil"), Age: \(profile.age?.description ?? "nil"), Systems: \(profile.systems.count), Usage: \(profile.usagePattern?.occupancyFrequency?.rawValue ?? "nil")")
         
         do {
             try await firebaseService.saveHouseProfile(profile)
@@ -772,8 +777,8 @@ class ChatViewModel: ObservableObject {
             }
             
         case .usagePattern:
-            if let usage = onboardingData.usagePattern {
-                return "Perfect! You use the house \(usage.occupancyFrequency.rawValue.lowercased())."
+            if let usage = onboardingData.usagePattern, let frequency = usage.occupancyFrequency {
+                return "Perfect! You use the house \(frequency.rawValue.lowercased())."
             }
             return "Thanks for that information!"
         }

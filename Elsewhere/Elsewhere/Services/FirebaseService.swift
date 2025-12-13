@@ -317,9 +317,11 @@ class FirebaseService: ObservableObject {
         
         if let usagePattern = profile.usagePattern {
             var usageData: [String: Any] = [
-                "occupancyFrequency": usagePattern.occupancyFrequency.rawValue,
                 "seasonalUsage": usagePattern.seasonalUsage
             ]
+            if let occupancyFrequency = usagePattern.occupancyFrequency {
+                usageData["occupancyFrequency"] = occupancyFrequency.rawValue
+            }
             if let typicalStayDuration = usagePattern.typicalStayDuration {
                 usageData["typicalStayDuration"] = typicalStayDuration
             }
@@ -440,9 +442,8 @@ class FirebaseService: ObservableObject {
         
         // Decode usage pattern
         var usagePattern: UsagePattern?
-        if let usageData = data["usagePattern"] as? [String: Any],
-           let frequencyString = usageData["occupancyFrequency"] as? String,
-           let frequency = OccupancyFrequency(rawValue: frequencyString) {
+        if let usageData = data["usagePattern"] as? [String: Any] {
+            let frequency: OccupancyFrequency? = (usageData["occupancyFrequency"] as? String).flatMap { OccupancyFrequency(rawValue: $0) }
             usagePattern = UsagePattern(
                 occupancyFrequency: frequency,
                 typicalStayDuration: usageData["typicalStayDuration"] as? Int,

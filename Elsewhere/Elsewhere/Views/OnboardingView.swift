@@ -388,7 +388,7 @@ struct UsagePatternFormView: View {
             }
             .onAppear {
                 if let existing = onboardingViewModel.collectedData.usagePattern {
-                    frequency = existing.occupancyFrequency
+                    frequency = existing.occupancyFrequency ?? .monthly
                 }
             }
         }

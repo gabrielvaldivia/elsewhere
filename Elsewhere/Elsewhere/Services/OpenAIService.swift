@@ -147,7 +147,11 @@ class OpenAIService {
         }
         
         if let usagePattern = profile.usagePattern {
-            context += "- Usage: \(usagePattern.occupancyFrequency.rawValue), Seasonal: \(usagePattern.seasonalUsage)\n"
+            if let frequency = usagePattern.occupancyFrequency {
+                context += "- Usage: \(frequency.rawValue), Seasonal: \(usagePattern.seasonalUsage)\n"
+            } else {
+                context += "- Usage: Not specified, Seasonal: \(usagePattern.seasonalUsage)\n"
+            }
         }
         
         if !profile.riskFactors.isEmpty {

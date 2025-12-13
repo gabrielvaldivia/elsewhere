@@ -46,8 +46,8 @@ class OnboardingViewModel: ObservableObject {
         )
         
         // Add risk factors based on collected data
-        if let usagePattern = collectedData.usagePattern {
-            if usagePattern.occupancyFrequency == .rarely || usagePattern.occupancyFrequency == .seasonally {
+        if let usagePattern = collectedData.usagePattern, let frequency = usagePattern.occupancyFrequency {
+            if frequency == .rarely || frequency == .seasonally {
                 profile.riskFactors.append(RiskFactor(
                     type: .lowOccupancy,
                     severity: .medium

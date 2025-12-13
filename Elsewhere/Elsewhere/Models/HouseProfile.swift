@@ -121,7 +121,7 @@ enum SystemType: String, CaseIterable, Codable, Equatable {
 }
 
 struct UsagePattern: Codable, Equatable {
-    var occupancyFrequency: OccupancyFrequency
+    var occupancyFrequency: OccupancyFrequency?
     var typicalStayDuration: Int? // Days
     var seasonalUsage: Bool
     var notes: String?
