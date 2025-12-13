@@ -16,13 +16,15 @@ struct ChatView: View {
     init(appState: AppState) {
         self.appState = appState
         // For Phase 1 MVP: Use placeholder IDs until auth/house setup is complete
-        // Wait a moment for authentication to complete
         let houseId = appState.currentHouse?.id ?? "placeholder-house-id"
         let userId = appState.currentUser?.id ?? "placeholder-user-id"
+        let isOnboarding = appState.currentHouse == nil
+        
         _viewModel = StateObject(wrappedValue: ChatViewModel(
             houseId: houseId,
             userId: userId,
-            houseProfile: appState.houseProfile
+            houseProfile: appState.houseProfile,
+            isOnboarding: isOnboarding
         ))
     }
     
@@ -95,6 +97,20 @@ struct ChatView: View {
             // Update view model when user ID changes
             if let userId = newUserId, userId != "placeholder-user-id" {
                 viewModel.updateUserId(userId)
+            }
+        }
+        .onChange(of: appState.currentHouse?.id) { _, newHouseId in
+            // If house is created during onboarding, update the view model
+            if let houseId = newHouseId, viewModel.isOnboarding {
+                viewModel.updateHouseId(houseId)
+                viewModel.isOnboarding = false
+            }
+        }
+        .onAppear {
+            // Set up callback for house creation
+            viewModel.onHouseCreated = { house, profile in
+                appState.setCurrentHouse(house)
+                appState.setHouseProfile(profile)
             }
         }
         .alert("Error", isPresented: .constant(viewModel.errorMessage != nil)) {

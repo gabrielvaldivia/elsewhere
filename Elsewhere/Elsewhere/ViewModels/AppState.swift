@@ -41,6 +41,9 @@ class AppState: ObservableObject {
                 self.isAuthenticating = false
                 print("✅ Authenticated as user: \(user.id)")
             }
+            
+            // After authentication, check if user has existing houses
+            await loadUserHouses()
         } catch {
             await MainActor.run {
                 self.isAuthenticating = false
@@ -51,7 +54,41 @@ class AppState: ObservableObject {
     
     func setCurrentHouse(_ house: House) {
         currentHouse = house
-        // TODO: Load house profile from Firebase
+        // Load house profile from Firebase
+        Task {
+            do {
+                if let profile = try await FirebaseService.shared.fetchHouseProfile(houseId: house.id) {
+                    await MainActor.run {
+                        self.houseProfile = profile
+                    }
+                }
+            } catch {
+                print("Failed to load house profile: \(error)")
+            }
+        }
+    }
+    
+    func loadUserHouses() async {
+        guard let userId = currentUser?.id else { return }
+        
+        do {
+            let houses = try await FirebaseService.shared.fetchUserHouses(userId: userId)
+            await MainActor.run {
+                if let firstHouse = houses.first {
+                    self.currentHouse = firstHouse
+                    // Load profile for the house
+                    Task {
+                        if let profile = try? await FirebaseService.shared.fetchHouseProfile(houseId: firstHouse.id) {
+                            await MainActor.run {
+                                self.houseProfile = profile
+                            }
+                        }
+                    }
+                }
+            }
+        } catch {
+            print("Failed to load user houses: \(error)")
+        }
     }
     
     func setHouseProfile(_ profile: HouseProfile) {
