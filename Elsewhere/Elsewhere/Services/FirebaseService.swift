@@ -217,6 +217,34 @@ class FirebaseService: ObservableObject {
             }
     }
     
+    // MARK: - Delete Operations (for testing)
+    
+    func deleteAllDataForHouse(houseId: String) async throws {
+        // Delete all chat messages
+        let messagesSnapshot = try await db.collection("chatMessages")
+            .whereField("houseId", isEqualTo: houseId)
+            .getDocuments()
+        
+        for doc in messagesSnapshot.documents {
+            try await doc.reference.delete()
+        }
+        print("✅ Deleted \(messagesSnapshot.documents.count) chat messages")
+        
+        // Delete house profile
+        let profileSnapshot = try await db.collection("houseProfiles")
+            .whereField("houseId", isEqualTo: houseId)
+            .getDocuments()
+        
+        for doc in profileSnapshot.documents {
+            try await doc.reference.delete()
+        }
+        print("✅ Deleted \(profileSnapshot.documents.count) house profiles")
+        
+        // Delete house
+        try await db.collection("houses").document(houseId).delete()
+        print("✅ Deleted house: \(houseId)")
+    }
+    
     // MARK: - Encoding/Decoding Helpers
     
     private func encodeHouseProfile(_ profile: HouseProfile) throws -> [String: Any] {

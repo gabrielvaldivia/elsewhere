@@ -12,17 +12,20 @@ struct ChatView: View {
     @StateObject private var viewModel: ChatViewModel
     
     @State private var inputText: String = ""
+    @State private var callbackSetup: Bool = false
     
     init(appState: AppState) {
         self.appState = appState
         // For Phase 1 MVP: Use placeholder IDs until auth/house setup is complete
-        // Wait a moment for authentication to complete
         let houseId = appState.currentHouse?.id ?? "placeholder-house-id"
         let userId = appState.currentUser?.id ?? "placeholder-user-id"
+        let isOnboarding = appState.currentHouse == nil
+        
         _viewModel = StateObject(wrappedValue: ChatViewModel(
             houseId: houseId,
             userId: userId,
-            houseProfile: appState.houseProfile
+            houseProfile: appState.houseProfile,
+            isOnboarding: isOnboarding
         ))
     }
     
@@ -95,6 +98,37 @@ struct ChatView: View {
             // Update view model when user ID changes
             if let userId = newUserId, userId != "placeholder-user-id" {
                 viewModel.updateUserId(userId)
+            }
+        }
+        .onChange(of: appState.currentHouse?.id) { _, newHouseId in
+            // If house is created during onboarding, update the view model
+            if let houseId = newHouseId, viewModel.isOnboarding {
+                viewModel.updateHouseId(houseId)
+                viewModel.isOnboarding = false
+            } else if newHouseId == nil && !viewModel.isOnboarding {
+                // House was deleted, restart onboarding
+                viewModel.resetForNewOnboarding()
+            }
+        }
+        .onAppear {
+            // Set up callback for house creation - only once
+            if !callbackSetup {
+                print("🔧 Setting up onHouseCreated callback in ChatView")
+                viewModel.onHouseCreated = { house, profile in
+                    print("🎯 onHouseCreated callback invoked!")
+                    print("   House ID: \(house.id)")
+                    print("   Profile ID: \(profile.id)")
+                    print("   Profile location: \(profile.location?.address ?? "nil")")
+                    print("   Profile age: \(profile.age?.description ?? "nil")")
+                    print("   Profile systems: \(profile.systems.count)")
+                    
+                    // Set both house and profile directly (we just created them)
+                    appState.setCurrentHouse(house, profile: profile)
+                    
+                    print("✅ After setCurrentHouse - appState.currentHouse: \(appState.currentHouse?.id ?? "nil")")
+                    print("✅ After setCurrentHouse - appState.houseProfile: \(appState.houseProfile?.id ?? "nil")")
+                }
+                callbackSetup = true
             }
         }
         .alert("Error", isPresented: .constant(viewModel.errorMessage != nil)) {
