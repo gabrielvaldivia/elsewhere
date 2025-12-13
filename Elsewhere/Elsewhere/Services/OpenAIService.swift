@@ -27,7 +27,8 @@ class OpenAIService {
     func sendMessage(
         messages: [ChatMessage],
         houseProfile: HouseProfile?,
-        systemPrompt: String? = nil
+        systemPrompt: String? = nil,
+        temperature: Double = 0.7
     ) async throws -> String {
         guard !apiKey.isEmpty else {
             throw OpenAIError.apiKeyMissing
@@ -88,7 +89,7 @@ class OpenAIService {
         let requestBody: [String: Any] = [
             "model": "gpt-4", // Can be changed to gpt-3.5-turbo for cost savings
             "messages": openAIMessages,
-            "temperature": 0.7,
+            "temperature": temperature,
             "stream": false
         ]
         

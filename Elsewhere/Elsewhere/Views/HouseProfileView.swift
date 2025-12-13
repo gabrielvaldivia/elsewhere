@@ -18,7 +18,11 @@ struct HouseProfileView: View {
     @State private var age: Int?
     @State private var occupancyFrequency: OccupancyFrequency = .monthly
     @State private var typicalStayDuration: Int?
-    @State private var seasonalUsage: Bool = false
+    @State private var systemsDict: [SystemType: HouseSystem] = [:]
+    @State private var squareFeet: String = ""
+    @State private var bedrooms: Int?
+    @State private var bathrooms: Int?
+    @State private var lotSize: String = ""
     
     var body: some View {
         NavigationStack {
@@ -48,6 +52,9 @@ struct HouseProfileView: View {
                 updateStateFromProfile(profile)
             }
         }
+        .onDisappear {
+            saveProfile()
+        }
     }
     
     private func updateStateFromProfile(_ profile: HouseProfile) {
@@ -59,41 +66,61 @@ struct HouseProfileView: View {
         age = profile.age
         occupancyFrequency = profile.usagePattern?.occupancyFrequency ?? .monthly
         typicalStayDuration = profile.usagePattern?.typicalStayDuration
-        seasonalUsage = profile.usagePattern?.seasonalUsage ?? false
         editedProfile = profile
+        
+        // Load house size
+        if let size = profile.size {
+            squareFeet = size.squareFeet.map { String($0) } ?? ""
+            bedrooms = size.bedrooms
+            bathrooms = size.bathrooms
+            lotSize = size.lotSize.map { String($0) } ?? ""
+        } else {
+            squareFeet = ""
+            bedrooms = nil
+            bathrooms = nil
+            lotSize = ""
+        }
+        
+        // Load systems into dictionary
+        systemsDict = Dictionary(uniqueKeysWithValues: profile.systems.map { ($0.type, $0) })
     }
     
     private func profileContent(_ profile: HouseProfile) -> some View {
         Form {
             Section("Name") {
                 TextField("House Name", text: $name)
-                    .onChange(of: name) { _, _ in
+                    .onSubmit {
                         saveProfile()
                     }
             }
             
             Section("Location") {
                 TextField("Address", text: $address)
-                    .onChange(of: address) { _, _ in
+                    .onSubmit {
                         saveProfile()
                     }
                 TextField("City", text: $city)
-                    .onChange(of: city) { _, _ in
+                    .onSubmit {
                         saveProfile()
                     }
-                TextField("State", text: $state)
-                    .onChange(of: state) { _, _ in
-                        saveProfile()
+                Picker("State", selection: $state) {
+                    Text("Select State").tag("")
+                    ForEach(USStates.allStates, id: \.abbreviation) { stateOption in
+                        Text("\(stateOption.name)").tag(stateOption.abbreviation)
                     }
+                }
+                .onChange(of: state) { _, _ in
+                    saveProfile()
+                }
                 TextField("ZIP Code", text: $zipCode)
-                    .onChange(of: zipCode) { _, _ in
+                    .onSubmit {
                         saveProfile()
                     }
             }
             
-            Section("Details") {
+            Section("Age") {
                 if let currentAge = age {
-                    Stepper("Age: \(currentAge) years", value: Binding(
+                    Stepper("\(currentAge) years", value: Binding(
                         get: { currentAge },
                         set: { newAge in
                             age = newAge
@@ -108,23 +135,53 @@ struct HouseProfileView: View {
                 }
             }
             
-            if !profile.systems.isEmpty {
-                Section("Systems") {
-                    ForEach(profile.systems) { system in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(system.type.rawValue)
-                                .font(.headline)
-                            if let description = system.description {
-                                Text(description)
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
+            Section("Size") {
+                TextField("Square Feet", text: $squareFeet)
+                    .keyboardType(.numberPad)
+                    .onSubmit {
+                        saveProfile()
+                    }
+                
+                if let currentBedrooms = bedrooms {
+                    Stepper("Bedrooms: \(currentBedrooms)", value: Binding(
+                        get: { currentBedrooms },
+                        set: { newValue in
+                            bedrooms = newValue
+                            saveProfile()
                         }
+                    ), in: 0...20)
+                } else {
+                    Button("Add Bedrooms") {
+                        bedrooms = 1
+                        saveProfile()
                     }
                 }
+                
+                if let currentBathrooms = bathrooms {
+                    Stepper("Bathrooms: \(currentBathrooms)", value: Binding(
+                        get: { currentBathrooms },
+                        set: { newValue in
+                            bathrooms = newValue
+                            saveProfile()
+                        }
+                    ), in: 0...20)
+                } else {
+                    Button("Add Bathrooms") {
+                        bathrooms = 1
+                        saveProfile()
+                    }
+                }
+                
+                TextField("Lot Size (acres)", text: $lotSize)
+                    .keyboardType(.decimalPad)
+                    .onSubmit {
+                        saveProfile()
+                    }
             }
             
-            Section("Usage") {
+            
+            
+            Section("Typical Stay") {
                 Picker("Frequency", selection: $occupancyFrequency) {
                     ForEach([OccupancyFrequency.daily, .weekly, .biweekly, .monthly, .seasonally, .rarely], id: \.self) { freq in
                         Text(freq.rawValue).tag(freq)
@@ -135,7 +192,7 @@ struct HouseProfileView: View {
                 }
                 
                 if let duration = typicalStayDuration {
-                    Stepper("Typical Stay: \(duration) days", value: Binding(
+                    Stepper("Duration: \(duration) days", value: Binding(
                         get: { duration },
                         set: { newDuration in
                             typicalStayDuration = newDuration
@@ -143,16 +200,58 @@ struct HouseProfileView: View {
                         }
                     ), in: 1...365)
                 } else {
-                    Button("Add Typical Stay Duration") {
+                    Button("Add Duration") {
                         typicalStayDuration = 7
                         saveProfile()
                     }
                 }
-                
-                Toggle("Seasonal Usage", isOn: $seasonalUsage)
-                    .onChange(of: seasonalUsage) { _, _ in
-                        saveProfile()
+            }
+
+            Section("Systems") {
+                // Show existing systems from dictionary
+                ForEach(Array(systemsDict.values).sorted(by: { $0.type.rawValue < $1.type.rawValue }), id: \.id) { system in
+                    SystemDetailRow(
+                        system: system,
+                        systemBinding: Binding(
+                            get: { systemsDict[system.type] ?? system },
+                            set: { updatedSystem in
+                                systemsDict[system.type] = updatedSystem
+                                saveProfile()
+                            }
+                        ),
+                        onRemove: {
+                            systemsDict.removeValue(forKey: system.type)
+                            saveProfile()
+                        },
+                        onSave: {
+                            saveProfile()
+                        }
+                    )
+                }
+                .onDelete { indexSet in
+                    let systems = Array(systemsDict.values).sorted(by: { $0.type.rawValue < $1.type.rawValue })
+                    for index in indexSet {
+                        let system = systems[index]
+                        systemsDict.removeValue(forKey: system.type)
                     }
+                    saveProfile()
+                }
+                
+                // Add new system button - show systems not yet added
+                if systemsDict.count < SystemType.allCases.count {
+                    Menu {
+                        ForEach(SystemType.allCases.filter { systemsDict[$0] == nil }, id: \.self) { systemType in
+                            Button(systemType.rawValue) {
+                                addSystem(systemType)
+                            }
+                        }
+                    } label: {
+                        HStack {
+                            Text("Add System")
+                        }
+                        .foregroundColor(.blue)
+                    }
+                }
             }
             
             if !profile.riskFactors.isEmpty {
@@ -244,9 +343,24 @@ struct HouseProfileView: View {
                 profile.usagePattern = UsagePattern(
                     occupancyFrequency: occupancyFrequency,
                     typicalStayDuration: typicalStayDuration,
-                    seasonalUsage: seasonalUsage,
+                    seasonalUsage: occupancyFrequency == .seasonally,
                     notes: profile.usagePattern?.notes
                 )
+                
+                // Update house size
+                var houseSize = HouseSize()
+                if !squareFeet.isEmpty, let sqft = Int(squareFeet) {
+                    houseSize.squareFeet = sqft
+                }
+                houseSize.bedrooms = bedrooms
+                houseSize.bathrooms = bathrooms
+                if !lotSize.isEmpty, let lot = Double(lotSize) {
+                    houseSize.lotSize = lot
+                }
+                profile.size = (houseSize.squareFeet != nil || houseSize.bedrooms != nil || houseSize.bathrooms != nil || houseSize.lotSize != nil) ? houseSize : nil
+                
+                // Update systems from dictionary
+                profile.systems = Array(systemsDict.values)
                 
                 profile.updatedAt = Date()
                 
@@ -289,6 +403,21 @@ struct HouseProfileView: View {
         case .high:
             return .red
         }
+    }
+    
+    private func addSystem(_ systemType: SystemType) {
+        systemsDict[systemType] = HouseSystem(type: systemType)
+        saveProfile()
+    }
+    
+    private func updateSystemInProfile(_ system: HouseSystem) {
+        systemsDict[system.type] = system
+        saveProfile()
+    }
+    
+    private func removeSystemFromProfile(_ systemType: SystemType) {
+        systemsDict.removeValue(forKey: systemType)
+        saveProfile()
     }
     
     private func deleteAllData() async {

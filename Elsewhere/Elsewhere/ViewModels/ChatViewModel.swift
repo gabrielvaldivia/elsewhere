@@ -260,85 +260,74 @@ class ChatViewModel: ObservableObject {
         }
     }
     
-    private func getOnboardingLLMResponse(userMessage: String) async throws -> String {
-        // Build context about what we're collecting
-        var context = """
-        IMPORTANT: You are currently in ONBOARDING MODE. You are helping a user set up their second home profile for the first time. 
-        This is a structured conversation where you need to collect specific information before the app can function normally.
+    private func getOnboardingResponse(userMessage: String) -> String {
+        // Generate response directly from templates - don't use LLM to avoid it asking multiple questions
+        // Only use brief acknowledgments and then the exact next question
         
-        """
-        
-        // What we've collected so far
-        var collectedInfo: [String] = []
-        if let location = onboardingData.location {
-            collectedInfo.append("Location: \(location.address), \(location.city), \(location.state)")
-        }
-        if let age = onboardingData.age {
-            collectedInfo.append("Age: \(age) years old")
-        }
-        if !onboardingData.systems.isEmpty {
-            let systemNames = onboardingData.systems.map { $0.type.rawValue }.joined(separator: ", ")
-            collectedInfo.append("Systems: \(systemNames)")
-        }
-        if let usage = onboardingData.usagePattern {
-            collectedInfo.append("Usage: \(usage.occupancyFrequency.rawValue)")
-        }
-        
-        if !collectedInfo.isEmpty {
-            context += "So far you've collected: \(collectedInfo.joined(separator: "; ")). "
-        } else {
-            context += "You haven't collected any information yet. "
-        }
-        
-        // What we need next
-        var nextQuestion = ""
         if onboardingData.location == nil {
-            nextQuestion = "Ask for the house location (full address: street, city, state, ZIP). Be conversational and friendly."
+            // Shouldn't get here if we have location, but handle it
+            return "Where is your second home located? Please provide the full address (street address, city, state, and ZIP code)."
         } else if onboardingData.age == nil {
-            nextQuestion = "Ask how old the house is (in years). Be conversational."
+            // Just got location, acknowledge and ask for age
+            return "Thanks! How old is your house? Please tell me the age in years."
         } else if currentSystemIndex < SystemType.allCases.count {
             let systemType = SystemType.allCases[currentSystemIndex]
             if systemType != .other {
                 let systemName = getSystemQuestion(for: systemType)
-                nextQuestion = "Ask if the house has \(systemName). Be conversational - you can ask it naturally, like 'What about heating?' or 'Do you have air conditioning?' Keep it friendly and brief."
+                // Acknowledge previous answer briefly and ask about this system
+                return "Thanks! Does your house have \(systemName)?"
             } else {
-                nextQuestion = "Ask if there are any other systems. Be brief."
+                return "Thanks! Are there any other systems I should know about?"
             }
         } else if onboardingData.usagePattern == nil {
-            nextQuestion = "Ask how often they use the house (monthly, seasonally, rarely, etc.). Be conversational."
+            return "Thanks! How often do you use the house? For example: monthly, seasonally, rarely, weekly, etc."
         } else {
-            nextQuestion = "Thank them and let them know you have everything you need. Be warm and friendly."
+            return "Perfect! I have everything I need to help you manage your second home. Let's get started!"
         }
+    }
+    
+    private func getClarificationResponse(for question: OnboardingQuestion, userMessage: String) async throws -> String {
+        // Use LLM only for clarification, with very strict prompt
+        let clarificationPrompt = """
+        The user's answer was unclear. Ask for clarification with EXACTLY ONE simple question.
         
-        context += "Next: \(nextQuestion) "
+        Current question type: \(question)
+        User's answer: \(userMessage)
         
-        // Instructions
-        context += """
-        
-        CRITICAL ONBOARDING RULES:
-        - You are ONLY collecting information. Do NOT give advice, suggestions, or detailed explanations.
-        - Do NOT discuss maintenance, repairs, or recommendations.
-        - Do NOT provide information about systems, roofs, foundations, or any other topics.
-        - Your ONLY job is to ask questions and acknowledge answers briefly.
-        - Be friendly, conversational, and natural
-        - Acknowledge what they just said in ONE sentence maximum
-        - Ask ONE question at a time
-        - CRITICAL: Every response MUST end with a question. Never say "let's move on" or "next question" without actually asking it.
-        - If they give you the information you need, acknowledge it briefly (1 sentence max) and then immediately ask the next question
-        - If their answer is unclear, ask for clarification in a friendly way
-        - Keep responses VERY brief (1-2 sentences max total)
-        - Always end with a question mark (?)
-        - Do NOT provide lists, bullet points, or detailed information
-        - Do NOT discuss the condition of the house or give any advice
-        - Example of GOOD response: "Thanks! Now, how old is your house?"
-        - Example of BAD response: "Being built in 2009, your home should generally be in good condition. However, there may be some areas that need attention. 1. Roofing: If it hasn't been replaced..."
+        Respond with ONLY one clarifying question (1 sentence max). Be friendly and brief.
+        Do NOT ask about anything else. Do NOT provide advice or information.
+        Do NOT ask multiple questions or use lists.
         """
         
-        return try await openAIService.sendMessage(
-            messages: messages,
-            houseProfile: nil,
-            systemPrompt: context
+        // Create a simple message for clarification
+        let clarificationMessage = ChatMessage(
+            houseId: houseId,
+            userId: userId,
+            role: .user,
+            content: userMessage
         )
+        
+        // Use lower temperature for more predictable responses
+        return try await openAIService.sendMessage(
+            messages: [clarificationMessage],
+            houseProfile: nil,
+            systemPrompt: clarificationPrompt,
+            temperature: 0.2 // Much lower temperature for more deterministic responses
+        )
+    }
+    
+    private func needsClarification(for question: OnboardingQuestion, userMessage: String) -> Bool {
+        // Check if we successfully extracted data for the current question
+        switch question {
+        case .location:
+            return extractLocation(from: userMessage) == nil
+        case .age:
+            return extractAge(from: userMessage) == nil
+        case .system:
+            return extractYesNo(from: userMessage) == nil
+        case .usagePattern:
+            return extractUsagePattern(from: userMessage) == nil
+        }
     }
     
     private func checkAndAdvanceOnboarding() {
@@ -403,8 +392,10 @@ class ChatViewModel: ObservableObject {
                     // Track what question we were on before processing
                     let previousQuestion = currentOnboardingQuestion
                     var dataExtracted = false
+                    var needsClarificationForPrevious = false
                     
                     // First, try to extract data from the response
+                    
                     if let currentQuestion = currentOnboardingQuestion {
                         let hadDataBefore = hasDataForQuestion(currentQuestion)
                         let systemIndexBefore = currentSystemIndex
@@ -417,13 +408,27 @@ class ChatViewModel: ObservableObject {
                         // 2. OR we advanced through a system (systemIndex changed)
                         dataExtracted = (!hadDataBefore && hasDataAfter) || (systemIndexBefore != systemIndexAfter)
                         
+                        // Check if we need clarification BEFORE advancing to next question
+                        if !dataExtracted {
+                            needsClarificationForPrevious = self.needsClarification(for: currentQuestion, userMessage: content)
+                        }
+                        
                         if dataExtracted {
                             print("✅ Data extracted for question: \(currentQuestion)")
+                            // Advance to next question BEFORE generating response
+                            askNextOnboardingQuestion()
                         }
                     }
                     
-                    // Get conversational response from LLM
-                    let agentResponse = try await getOnboardingLLMResponse(userMessage: content)
+                    // Get response - use template-based response (no LLM unless clarification needed)
+                    let agentResponse: String
+                    if needsClarificationForPrevious, let prevQuestion = previousQuestion {
+                        // Need clarification for the previous question
+                        agentResponse = try await getClarificationResponse(for: prevQuestion, userMessage: content)
+                    } else {
+                        // Normal flow - use template response
+                        agentResponse = getOnboardingResponse(userMessage: content)
+                    }
                     
                     let agentMessage = ChatMessage(
                         houseId: houseId,
@@ -444,31 +449,8 @@ class ChatViewModel: ObservableObject {
                         }
                         isTyping = false
                         
-                        // If data was extracted, advance to next question
-                        if dataExtracted {
-                            askNextOnboardingQuestion()
-                            // Always ensure the next question is asked - check if response ends with "?"
-                            if let newQuestion = currentOnboardingQuestion, newQuestion != previousQuestion {
-                                let responseTrimmed = agentResponse.trimmingCharacters(in: .whitespacesAndNewlines)
-                                let endsWithQuestion = responseTrimmed.hasSuffix("?")
-                                
-                                // If response doesn't end with "?", ask the question explicitly
-                                // This ensures we never get stuck with acknowledgments that don't ask the next question
-                                if !endsWithQuestion {
-                                    // Small delay to ensure LLM message is added first, then ask explicitly
-                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                                        // Double-check we still need to ask (in case something changed)
-                                        if let currentQ = self.currentOnboardingQuestion,
-                                           currentQ == newQuestion,
-                                           let lastMsg = self.messages.last,
-                                           lastMsg.role == .agent,
-                                           !lastMsg.content.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("?") {
-                                            self.askQuestionExplicitly(for: newQuestion)
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        // Response is already generated based on the next question (which was set above if data was extracted)
+                        // Template-based responses always include the question, so no need for extra checks
                         
                         // Check if onboarding is complete
                         checkAndAdvanceOnboarding()
@@ -534,6 +516,8 @@ class ChatViewModel: ObservableObject {
                 // Create house and profile when we get location
                 Task {
                     await createHouseIfNeeded()
+                    // Wait a bit for house/profile to be created
+                    try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 seconds
                     await updateProfileIncrementally()
                 }
             } else {
@@ -544,6 +528,7 @@ class ChatViewModel: ObservableObject {
             if let age = extractAge(from: content) {
                 onboardingData.age = age
                 print("✅ Extracted age: \(age) years")
+                print("📊 Current onboardingData - Location: \(onboardingData.location != nil), Age: \(age), Systems: \(onboardingData.systems.count)")
                 Task {
                     await updateProfileIncrementally()
                 }
@@ -558,9 +543,12 @@ class ChatViewModel: ObservableObject {
                 if !onboardingData.systems.contains(where: { $0.type == systemType }) {
                     onboardingData.systems.append(HouseSystem(type: systemType))
                     print("✅ Added system: \(systemType.rawValue)")
+                    print("📊 Current systems: \(onboardingData.systems.map { $0.type.rawValue }.joined(separator: ", "))")
                     Task {
                         await updateProfileIncrementally()
                     }
+                } else {
+                    print("ℹ️ System \(systemType.rawValue) already in list")
                 }
                 // Advance to next system
                 currentSystemIndex += 1
@@ -581,6 +569,7 @@ class ChatViewModel: ObservableObject {
             if let usagePattern = extractUsagePattern(from: content) {
                 onboardingData.usagePattern = usagePattern
                 print("✅ Extracted usage pattern: \(usagePattern.occupancyFrequency.rawValue)")
+                print("📊 Current onboardingData - Location: \(onboardingData.location != nil), Age: \(onboardingData.age != nil), Systems: \(onboardingData.systems.count), Usage: \(usagePattern.occupancyFrequency.rawValue)")
                 Task {
                     await updateProfileIncrementally()
                 }
@@ -654,10 +643,23 @@ class ChatViewModel: ObservableObject {
     }
     
     private func updateProfileIncrementally() async {
-        guard let house = createdHouse, var profile = createdProfile else {
-            // House not created yet, will be created when location is set
+        guard let house = createdHouse else {
+            print("⚠️ Cannot update profile: house not created yet")
             return
         }
+        
+        // Ensure we have a profile - if not, create it
+        var profile = createdProfile ?? HouseProfile(
+            houseId: house.id,
+            name: onboardingData.name,
+            location: onboardingData.location,
+            age: onboardingData.age,
+            systems: [],
+            usagePattern: onboardingData.usagePattern
+        )
+        
+        // Preserve the existing profile ID if we have one
+        let profileId = profile.id
         
         // Update profile with latest data
         profile.location = onboardingData.location
@@ -692,16 +694,23 @@ class ChatViewModel: ObservableObject {
         
         profile.updatedAt = Date()
         
+        // Preserve the ID
+        profile.id = profileId
+        
+        print("💾 Updating profile - ID: \(profile.id), Location: \(profile.location?.address ?? "nil"), Age: \(profile.age?.description ?? "nil"), Systems: \(profile.systems.count), Usage: \(profile.usagePattern?.occupancyFrequency.rawValue ?? "nil")")
+        
         do {
             try await firebaseService.saveHouseProfile(profile)
             
             await MainActor.run {
                 createdProfile = profile
                 
-                // Update AppState with new profile
-                if let callback = onHouseCreated, let house = createdHouse {
-                    print("✅ Profile updated incrementally - Location: \(profile.location != nil), Age: \(profile.age != nil), Systems: \(profile.systems.count)")
+                // Always update AppState with new profile
+                if let callback = onHouseCreated {
+                    print("✅ Profile updated and saved - Location: \(profile.location != nil ? profile.location!.address : "nil"), Age: \(profile.age?.description ?? "nil"), Systems: \(profile.systems.count)")
                     callback(house, profile)
+                } else {
+                    print("⚠️ Warning: onHouseCreated callback not set - profile updated but AppState not notified")
                 }
             }
         } catch {

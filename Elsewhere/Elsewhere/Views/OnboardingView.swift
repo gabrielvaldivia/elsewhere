@@ -178,7 +178,12 @@ struct LocationFormView: View {
                 Section("Address") {
                     TextField("Street Address", text: $address)
                     TextField("City", text: $city)
-                    TextField("State", text: $state)
+                    Picker("State", selection: $state) {
+                        Text("Select State").tag("")
+                        ForEach(USStates.allStates, id: \.abbreviation) { stateOption in
+                            Text("\(stateOption.name)").tag(stateOption.abbreviation)
+                        }
+                    }
                     TextField("ZIP Code", text: $zipCode)
                 }
             }
@@ -265,23 +270,58 @@ struct SystemsFormView: View {
     @Environment(\.dismiss) var dismiss
     @ObservedObject var onboardingViewModel: OnboardingViewModel
     
-    @State private var selectedSystems: Set<SystemType> = []
+    @State private var systemsDict: [SystemType: HouseSystem] = [:]
     
     var body: some View {
         NavigationStack {
             Form {
-                Section("Select the systems in your house") {
-                    ForEach(SystemType.allCases, id: \.self) { systemType in
-                        Toggle(systemType.rawValue, isOn: Binding(
-                            get: { selectedSystems.contains(systemType) },
-                            set: { isOn in
-                                if isOn {
-                                    selectedSystems.insert(systemType)
-                                } else {
-                                    selectedSystems.remove(systemType)
+                Section("Systems") {
+                    ForEach(Array(systemsDict.values).sorted(by: { $0.type.rawValue < $1.type.rawValue }), id: \.id) { system in
+                        SystemDetailRow(
+                            system: system,
+                            systemBinding: Binding(
+                                get: { systemsDict[system.type] ?? system },
+                                set: { updatedSystem in
+                                    systemsDict[system.type] = updatedSystem
+                                    saveSystems()
+                                }
+                            ),
+                            onRemove: {
+                                systemsDict.removeValue(forKey: system.type)
+                                saveSystems()
+                            },
+                            onSave: {
+                                saveSystems()
+                            }
+                        )
+                    }
+                    .onDelete { indexSet in
+                        let systems = Array(systemsDict.values).sorted(by: { $0.type.rawValue < $1.type.rawValue })
+                        for index in indexSet {
+                            let system = systems[index]
+                            systemsDict.removeValue(forKey: system.type)
+                        }
+                        saveSystems()
+                    }
+                }
+                
+                // Add new system button
+                if systemsDict.count < SystemType.allCases.count {
+                    Section {
+                        Menu {
+                            ForEach(SystemType.allCases.filter { systemsDict[$0] == nil }, id: \.self) { systemType in
+                                Button(systemType.rawValue) {
+                                    systemsDict[systemType] = HouseSystem(type: systemType)
+                                    saveSystems()
                                 }
                             }
-                        ))
+                        } label: {
+                            HStack {
+                                Image(systemName: "plus.circle.fill")
+                                Text("Add System")
+                            }
+                            .foregroundColor(.blue)
+                        }
                     }
                 }
             }
@@ -294,23 +334,23 @@ struct SystemsFormView: View {
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
+                    Button("Done") {
                         saveSystems()
+                        dismiss()
                     }
-                    .disabled(selectedSystems.isEmpty)
                 }
             }
             .onAppear {
-                selectedSystems = Set(onboardingViewModel.collectedData.systems.map { $0.type })
+                // Load existing systems into dictionary
+                for system in onboardingViewModel.collectedData.systems {
+                    systemsDict[system.type] = system
+                }
             }
         }
     }
     
     private func saveSystems() {
-        onboardingViewModel.collectedData.systems = selectedSystems.map { systemType in
-            HouseSystem(type: systemType)
-        }
-        dismiss()
+        onboardingViewModel.collectedData.systems = Array(systemsDict.values)
     }
 }
 
@@ -319,7 +359,6 @@ struct UsagePatternFormView: View {
     @ObservedObject var onboardingViewModel: OnboardingViewModel
     
     @State private var frequency: OccupancyFrequency = .monthly
-    @State private var seasonalUsage: Bool = false
     
     var body: some View {
         NavigationStack {
@@ -332,9 +371,6 @@ struct UsagePatternFormView: View {
                     }
                 }
                 
-                Section("Usage Details") {
-                    Toggle("Seasonal Usage", isOn: $seasonalUsage)
-                }
             }
             .navigationTitle("Usage Pattern")
             .navigationBarTitleDisplayMode(.inline)
@@ -353,7 +389,6 @@ struct UsagePatternFormView: View {
             .onAppear {
                 if let existing = onboardingViewModel.collectedData.usagePattern {
                     frequency = existing.occupancyFrequency
-                    seasonalUsage = existing.seasonalUsage
                 }
             }
         }
@@ -363,7 +398,7 @@ struct UsagePatternFormView: View {
         onboardingViewModel.collectedData.usagePattern = UsagePattern(
             occupancyFrequency: frequency,
             typicalStayDuration: nil,
-            seasonalUsage: seasonalUsage,
+            seasonalUsage: frequency == .seasonally,
             notes: nil
         )
         dismiss()
