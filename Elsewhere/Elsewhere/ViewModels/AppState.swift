@@ -52,18 +52,34 @@ class AppState: ObservableObject {
         }
     }
     
-    func setCurrentHouse(_ house: House) {
+    func setCurrentHouse(_ house: House, profile: HouseProfile? = nil) {
+        print("🏠 setCurrentHouse called - House ID: \(house.id), Profile provided: \(profile != nil)")
         currentHouse = house
-        // Load house profile from Firebase
-        Task {
-            do {
-                if let profile = try await FirebaseService.shared.fetchHouseProfile(houseId: house.id) {
-                    await MainActor.run {
-                        self.houseProfile = profile
+        print("🏠 currentHouse set to: \(currentHouse?.id ?? "nil")")
+        
+        // If profile is provided, use it directly (e.g., when just created)
+        if let profile = profile {
+            self.houseProfile = profile
+            print("✅ Set house profile directly: \(profile.id)")
+            print("   Profile location: \(profile.location?.address ?? "nil")")
+            print("   Profile age: \(profile.age?.description ?? "nil")")
+            print("   Profile systems: \(profile.systems.count)")
+            print("   Profile usage: \(profile.usagePattern != nil ? "set" : "nil")")
+        } else {
+            // Otherwise, load from Firebase
+            Task {
+                do {
+                    if let profile = try await FirebaseService.shared.fetchHouseProfile(houseId: house.id) {
+                        await MainActor.run {
+                            self.houseProfile = profile
+                            print("✅ Loaded house profile from Firebase: \(profile.id)")
+                        }
+                    } else {
+                        print("⚠️ No profile found in Firebase for house: \(house.id)")
                     }
+                } catch {
+                    print("❌ Failed to load house profile: \(error)")
                 }
-            } catch {
-                print("Failed to load house profile: \(error)")
             }
         }
     }

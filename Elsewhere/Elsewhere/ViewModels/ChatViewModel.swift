@@ -29,6 +29,8 @@ class ChatViewModel: ObservableObject {
     @Published var currentOnboardingQuestion: OnboardingQuestion?
     private var currentSystemIndex: Int = 0 // Track which system we're asking about
     var onHouseCreated: ((House, HouseProfile) -> Void)?
+    private var createdHouse: House? // Track if house has been created
+    private var createdProfile: HouseProfile? // Track the profile we're building
     
     enum OnboardingQuestion: Equatable {
         case location
@@ -103,8 +105,10 @@ class ChatViewModel: ObservableObject {
         // The actual question will be asked by the LLM
         if onboardingData.location == nil {
             currentOnboardingQuestion = .location
+            print("📍 Next question: Location")
         } else if onboardingData.age == nil {
             currentOnboardingQuestion = .age
+            print("📅 Next question: Age")
         } else if currentSystemIndex < SystemType.allCases.count {
             let systemType = SystemType.allCases[currentSystemIndex]
             
@@ -113,16 +117,21 @@ class ChatViewModel: ObservableObject {
                 // Automatically add obvious systems to the profile
                 if obviousSystems.contains(systemType) && !onboardingData.systems.contains(where: { $0.type == systemType }) {
                     onboardingData.systems.append(HouseSystem(type: systemType))
+                    print("✅ Auto-added obvious system: \(systemType.rawValue)")
                 }
                 currentSystemIndex += 1
+                print("⏭️ Skipping system: \(systemType.rawValue), moving to index \(currentSystemIndex)")
                 askNextOnboardingQuestion() // Skip to next question
                 return
             }
             currentOnboardingQuestion = .system(systemType)
+            print("🔧 Next question: System - \(systemType.rawValue) (index \(currentSystemIndex))")
         } else if onboardingData.usagePattern == nil {
             currentOnboardingQuestion = .usagePattern
+            print("📊 Next question: Usage Pattern")
         } else {
             currentOnboardingQuestion = nil
+            print("✅ All questions answered!")
         }
         
         // The LLM will generate the actual question in response to user input
@@ -161,7 +170,11 @@ class ChatViewModel: ObservableObject {
     
     private func getOnboardingLLMResponse(userMessage: String) async throws -> String {
         // Build context about what we're collecting
-        var context = "You are helping a user set up their second home profile through a friendly conversation. "
+        var context = """
+        IMPORTANT: You are currently in ONBOARDING MODE. You are helping a user set up their second home profile for the first time. 
+        This is a structured conversation where you need to collect specific information before the app can function normally.
+        
+        """
         
         // What we've collected so far
         var collectedInfo: [String] = []
@@ -180,7 +193,9 @@ class ChatViewModel: ObservableObject {
         }
         
         if !collectedInfo.isEmpty {
-            context += "So far you've learned: \(collectedInfo.joined(separator: "; ")). "
+            context += "So far you've collected: \(collectedInfo.joined(separator: "; ")). "
+        } else {
+            context += "You haven't collected any information yet. "
         }
         
         // What we need next
@@ -228,23 +243,26 @@ class ChatViewModel: ObservableObject {
     }
     
     private func checkAndAdvanceOnboarding() {
-        // Check if onboarding is complete and we should create the house
-        // The LLM handles the conversation flow, we just need to detect completion
+        // Check if onboarding is complete
         // Systems are complete when we've asked about all of them (or reached "other")
-        let systemsComplete = currentSystemIndex >= SystemType.allCases.count || 
-                             (currentSystemIndex < SystemType.allCases.count && 
-                              SystemType.allCases[currentSystemIndex] == .other)
+        let systemsComplete = currentSystemIndex >= SystemType.allCases.count
         
         let isComplete = onboardingData.isLocationComplete && 
                         onboardingData.isAgeComplete && 
                         systemsComplete &&
                         onboardingData.isUsagePatternComplete
         
+        print("🔍 Onboarding check - Location: \(onboardingData.isLocationComplete), Age: \(onboardingData.isAgeComplete), Systems: \(systemsComplete) (index: \(currentSystemIndex)/\(SystemType.allCases.count)), Usage: \(onboardingData.isUsagePatternComplete), Complete: \(isComplete)")
+        
         if isComplete && currentOnboardingQuestion != nil {
-            // Wait a moment for the LLM's final message to appear, then create house
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                self.currentOnboardingQuestion = nil
-                self.createHouseFromOnboarding()
+            print("✅ Onboarding complete! Finalizing profile...")
+            // Final update to ensure everything is saved
+            Task {
+                await updateProfileIncrementally()
+                await MainActor.run {
+                    self.currentOnboardingQuestion = nil
+                    self.isOnboarding = false
+                }
             }
         }
     }
@@ -287,9 +305,19 @@ class ChatViewModel: ObservableObject {
                     // First, try to extract data from the response
                     if let currentQuestion = currentOnboardingQuestion {
                         let hadDataBefore = hasDataForQuestion(currentQuestion)
+                        let systemIndexBefore = currentSystemIndex
                         processOnboardingResponse(content, for: currentQuestion)
                         let hasDataAfter = hasDataForQuestion(currentQuestion)
-                        dataExtracted = !hadDataBefore && hasDataAfter
+                        let systemIndexAfter = currentSystemIndex
+                        
+                        // Data is extracted if:
+                        // 1. We got the data for the question (location, age, usage)
+                        // 2. OR we advanced through a system (systemIndex changed)
+                        dataExtracted = (!hadDataBefore && hasDataAfter) || (systemIndexBefore != systemIndexAfter)
+                        
+                        if dataExtracted {
+                            print("✅ Data extracted for question: \(currentQuestion)")
+                        }
                     }
                     
                     // Get conversational response from LLM
@@ -394,11 +422,25 @@ class ChatViewModel: ObservableObject {
         case .location:
             if let location = extractLocation(from: content) {
                 onboardingData.location = location
+                print("✅ Extracted location: \(location.address), \(location.city), \(location.state)")
+                // Create house and profile when we get location
+                Task {
+                    await createHouseIfNeeded()
+                    await updateProfileIncrementally()
+                }
+            } else {
+                print("⚠️ Could not extract location from: \(content)")
             }
             
         case .age:
             if let age = extractAge(from: content) {
                 onboardingData.age = age
+                print("✅ Extracted age: \(age) years")
+                Task {
+                    await updateProfileIncrementally()
+                }
+            } else {
+                print("⚠️ Could not extract age from: \(content)")
             }
             
         case .system(let systemType):
@@ -407,21 +449,155 @@ class ChatViewModel: ObservableObject {
                 // Check if system already exists in the list
                 if !onboardingData.systems.contains(where: { $0.type == systemType }) {
                     onboardingData.systems.append(HouseSystem(type: systemType))
+                    print("✅ Added system: \(systemType.rawValue)")
+                    Task {
+                        await updateProfileIncrementally()
+                    }
                 }
                 // Advance to next system
                 currentSystemIndex += 1
+                print("➡️ Advanced to system index: \(currentSystemIndex)")
                 askNextOnboardingQuestion()
             } else if extractYesNo(from: content) == false {
                 // User said no, skip this system
+                print("❌ User said no to system: \(systemType.rawValue)")
                 currentSystemIndex += 1
+                print("➡️ Advanced to system index: \(currentSystemIndex)")
                 askNextOnboardingQuestion()
+            } else {
+                print("⚠️ Could not determine yes/no for system: \(systemType.rawValue) from: \(content)")
             }
             // If unclear, LLM will ask for clarification
             
         case .usagePattern:
             if let usagePattern = extractUsagePattern(from: content) {
                 onboardingData.usagePattern = usagePattern
+                print("✅ Extracted usage pattern: \(usagePattern.occupancyFrequency.rawValue)")
+                Task {
+                    await updateProfileIncrementally()
+                }
+            } else {
+                print("⚠️ Could not extract usage pattern from: \(content)")
             }
+        }
+    }
+    
+    private func createHouseIfNeeded() async {
+        // Only create house once, when we get location
+        guard createdHouse == nil else { return }
+        guard let userId = userId != "placeholder-user-id" ? userId : nil else {
+            print("⚠️ Cannot create house: userId is placeholder")
+            return
+        }
+        
+        do {
+            let house = House(
+                createdBy: userId,
+                ownerIds: [userId],
+                memberIds: []
+            )
+            
+            try await firebaseService.createHouse(house)
+            
+            // Create initial profile with just location
+            var allSystems = onboardingData.systems
+            // Add obvious systems
+            for obviousSystem in obviousSystems {
+                if !allSystems.contains(where: { $0.type == obviousSystem }) {
+                    allSystems.append(HouseSystem(type: obviousSystem))
+                }
+            }
+            
+            let profile = HouseProfile(
+                houseId: house.id,
+                name: onboardingData.name,
+                location: onboardingData.location,
+                age: onboardingData.age,
+                systems: allSystems,
+                usagePattern: onboardingData.usagePattern,
+                riskFactors: []
+            )
+            
+            try await firebaseService.saveHouseProfile(profile)
+            
+            await MainActor.run {
+                createdHouse = house
+                createdProfile = profile
+                
+                // Update house ID in view model
+                updateHouseId(house.id)
+                
+                // Notify AppState
+                if let callback = onHouseCreated {
+                    print("✅ House created early! Calling callback with initial profile")
+                    callback(house, profile)
+                } else {
+                    print("⚠️ House created but callback not set yet")
+                }
+            }
+            
+            print("✅ House and initial profile created: \(house.id)")
+        } catch {
+            print("❌ Failed to create house: \(error)")
+            await MainActor.run {
+                errorMessage = "Failed to create house: \(error.localizedDescription)"
+            }
+        }
+    }
+    
+    private func updateProfileIncrementally() async {
+        guard let house = createdHouse, var profile = createdProfile else {
+            // House not created yet, will be created when location is set
+            return
+        }
+        
+        // Update profile with latest data
+        profile.location = onboardingData.location
+        profile.age = onboardingData.age
+        profile.usagePattern = onboardingData.usagePattern
+        
+        // Update systems - ensure obvious systems are included
+        var allSystems = onboardingData.systems
+        for obviousSystem in obviousSystems {
+            if !allSystems.contains(where: { $0.type == obviousSystem }) {
+                allSystems.append(HouseSystem(type: obviousSystem))
+            }
+        }
+        profile.systems = allSystems
+        
+        // Update risk factors
+        profile.riskFactors = []
+        if let usagePattern = onboardingData.usagePattern {
+            if usagePattern.occupancyFrequency == .rarely || usagePattern.occupancyFrequency == .seasonally {
+                profile.riskFactors.append(RiskFactor(
+                    type: .lowOccupancy,
+                    severity: .medium
+                ))
+            }
+        }
+        if let age = onboardingData.age, age > 30 {
+            profile.riskFactors.append(RiskFactor(
+                type: .oldSystems,
+                severity: .medium
+            ))
+        }
+        
+        profile.updatedAt = Date()
+        
+        do {
+            try await firebaseService.saveHouseProfile(profile)
+            
+            await MainActor.run {
+                createdProfile = profile
+                
+                // Update AppState with new profile
+                if let callback = onHouseCreated, let house = createdHouse {
+                    print("✅ Profile updated incrementally - Location: \(profile.location != nil), Age: \(profile.age != nil), Systems: \(profile.systems.count)")
+                    callback(house, profile)
+                }
+            }
+        } catch {
+            print("❌ Failed to update profile: \(error)")
         }
     }
     
@@ -567,38 +743,105 @@ class ChatViewModel: ObservableObject {
             }
         }
         
-        // Strategy 2: Space-separated format (address city state zip)
-        // This is a fallback for addresses without commas
+        // Strategy 2: Space-separated format (address city state zip) - IMPROVED
+        // This handles cases like "12 bully hill drive north branch ny 12736"
         let spaceParts = trimmed.components(separatedBy: " ").filter { !$0.isEmpty }
         if spaceParts.count >= 4 {
-            // Try to identify: address (first few words), city (middle), state (2 chars), zip (5 digits)
             // Look for state (2 uppercase letters) and zip (5 digits)
             var stateIndex = -1
             var zipIndex = -1
             
             for (index, part) in spaceParts.enumerated() {
-                if part.count == 2 && part == part.uppercased() && stateIndex == -1 {
-                    stateIndex = index
+                // State: 2 letters (case-insensitive - will convert to uppercase)
+                if part.count == 2 && stateIndex == -1 {
+                    let upperPart = part.uppercased()
+                    // Check if it looks like a state abbreviation (2 letters, all alphabetic)
+                    if upperPart.allSatisfy({ $0.isLetter }) {
+                        stateIndex = index
+                    }
                 }
+                // ZIP: 5 digits
                 if part.count == 5 && part.allSatisfy({ $0.isNumber }) && zipIndex == -1 {
                     zipIndex = index
                 }
             }
             
+            // If we found both state and zip
             if stateIndex > 0 && zipIndex > stateIndex {
-                let address = spaceParts[0..<stateIndex-1].joined(separator: " ")
-                let city = spaceParts[stateIndex-1]
-                let state = spaceParts[stateIndex]
-                let zip = spaceParts[zipIndex]
-                
-                if !address.isEmpty {
-                    return Location(
-                        address: address,
-                        city: city,
-                        state: state,
-                        zipCode: zip,
-                        coordinates: nil
-                    )
+                // Address is everything before city
+                // City is everything between address and state (could be multiple words)
+                // State is at stateIndex
+                // ZIP is at zipIndex
+                if stateIndex > 0 {
+                    // Find where address ends - typically after street number and street name
+                    // For now, assume address is first 2-4 words, city is the rest before state
+                    // More sophisticated: look for street indicators like "street", "drive", "road", etc.
+                    var addressEndIndex = 0
+                    let streetIndicators = ["street", "st", "drive", "dr", "road", "rd", "avenue", "ave", "lane", "ln", "court", "ct", "way", "blvd", "boulevard"]
+                    
+                    // Find the last street indicator
+                    for (idx, part) in spaceParts.enumerated() {
+                        if idx < stateIndex && streetIndicators.contains(part.lowercased()) {
+                            addressEndIndex = idx + 1
+                        }
+                    }
+                    
+                    // If no street indicator found, assume address is first 2-3 words
+                    if addressEndIndex == 0 {
+                        addressEndIndex = min(3, stateIndex)
+                    }
+                    
+                    let address = spaceParts[0..<addressEndIndex].joined(separator: " ")
+                    let city = spaceParts[addressEndIndex..<stateIndex].joined(separator: " ")
+                    let state = spaceParts[stateIndex].uppercased()
+                    let zip = spaceParts[zipIndex]
+                    
+                    if !address.isEmpty && !city.isEmpty {
+                        return Location(
+                            address: address,
+                            city: city,
+                            state: state,
+                            zipCode: zip,
+                            coordinates: nil
+                        )
+                    }
+                }
+            } else if zipIndex > 0 {
+                // Found ZIP but no clear state - try to infer
+                // Assume ZIP is last, state might be before it
+                let possibleStateIndex = zipIndex - 1
+                if possibleStateIndex >= 0 && spaceParts[possibleStateIndex].count == 2 {
+                    let upperPart = spaceParts[possibleStateIndex].uppercased()
+                    if upperPart.allSatisfy({ $0.isLetter }) {
+                        // Find address end
+                        var addressEndIndex = 0
+                        let streetIndicators = ["street", "st", "drive", "dr", "road", "rd", "avenue", "ave", "lane", "ln", "court", "ct", "way", "blvd", "boulevard"]
+                        
+                        for (idx, part) in spaceParts.enumerated() {
+                            if idx < possibleStateIndex && streetIndicators.contains(part.lowercased()) {
+                                addressEndIndex = idx + 1
+                            }
+                        }
+                        
+                        if addressEndIndex == 0 {
+                            addressEndIndex = min(3, possibleStateIndex)
+                        }
+                        
+                        let address = spaceParts[0..<addressEndIndex].joined(separator: " ")
+                        let city = spaceParts[addressEndIndex..<possibleStateIndex].joined(separator: " ")
+                        let state = spaceParts[possibleStateIndex].uppercased()
+                        let zip = spaceParts[zipIndex]
+                        
+                        if !address.isEmpty && !city.isEmpty {
+                            return Location(
+                                address: address,
+                                city: city,
+                                state: state,
+                                zipCode: zip,
+                                coordinates: nil
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -653,9 +896,28 @@ class ChatViewModel: ObservableObject {
     }
     
     private func extractAge(from text: String) -> Int? {
-        // Look for numbers that could be age (typically 0-200)
-        let pattern = #"\b(\d{1,3})\s*(?:years?|yrs?|year old|years old)\b"#
-        if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) {
+        let lowerText = text.lowercased()
+        let currentYear = Calendar.current.component(.year, from: Date())
+        
+        // Pattern 1: "built in 2009" or "built 2009"
+        let builtInPattern = #"(?:built\s+in|built)\s+(\d{4})"#
+        if let regex = try? NSRegularExpression(pattern: builtInPattern, options: .caseInsensitive) {
+            let range = NSRange(text.startIndex..., in: text)
+            if let match = regex.firstMatch(in: text, options: [], range: range) {
+                if let yearRange = Range(match.range(at: 1), in: text),
+                   let year = Int(text[yearRange]),
+                   year >= 1800 && year <= currentYear {
+                    let age = currentYear - year
+                    if age >= 0 && age <= 200 {
+                        return age
+                    }
+                }
+            }
+        }
+        
+        // Pattern 2: "25 years old" or "25 years"
+        let agePattern = #"\b(\d{1,3})\s*(?:years?|yrs?|year old|years old)\b"#
+        if let regex = try? NSRegularExpression(pattern: agePattern, options: .caseInsensitive) {
             let range = NSRange(text.startIndex..., in: text)
             if let match = regex.firstMatch(in: text, options: [], range: range) {
                 if let ageRange = Range(match.range(at: 1), in: text),
@@ -666,7 +928,23 @@ class ChatViewModel: ObservableObject {
             }
         }
         
-        // Also try just a number if it's reasonable
+        // Pattern 3: Just a 4-digit year (1800-2024)
+        let yearPattern = #"\b(1[89]\d{2}|20[0-2]\d)\b"#
+        if let regex = try? NSRegularExpression(pattern: yearPattern, options: .caseInsensitive) {
+            let range = NSRange(text.startIndex..., in: text)
+            if let match = regex.firstMatch(in: text, options: [], range: range) {
+                if let yearRange = Range(match.range(at: 1), in: text),
+                   let year = Int(text[yearRange]),
+                   year >= 1800 && year <= currentYear {
+                    let age = currentYear - year
+                    if age >= 0 && age <= 200 {
+                        return age
+                    }
+                }
+            }
+        }
+        
+        // Pattern 4: Just a number if it's reasonable (0-200)
         let numbers = text.components(separatedBy: CharacterSet.decimalDigits.inverted)
             .compactMap { Int($0) }
             .filter { $0 >= 0 && $0 <= 200 }
@@ -777,9 +1055,17 @@ class ChatViewModel: ObservableObject {
                 
                 try await firebaseService.saveHouseProfile(profile)
                 
+                print("✅ House created: \(house.id)")
+                print("✅ Profile created - Location: \(profile.location != nil ? "\(profile.location!.address)" : "nil"), Age: \(profile.age ?? -1), Systems: \(profile.systems.count), Usage: \(profile.usagePattern != nil)")
+                
                 await MainActor.run {
                     // Notify that house was created
-                    onHouseCreated?(house, profile)
+                    if let callback = onHouseCreated {
+                        print("✅ Calling onHouseCreated callback")
+                        callback(house, profile)
+                    } else {
+                        print("❌ ERROR: onHouseCreated callback is nil! Cannot update AppState.")
+                    }
                 }
             } catch {
                 await MainActor.run {

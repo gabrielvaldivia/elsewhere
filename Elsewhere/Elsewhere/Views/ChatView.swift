@@ -12,6 +12,7 @@ struct ChatView: View {
     @StateObject private var viewModel: ChatViewModel
     
     @State private var inputText: String = ""
+    @State private var callbackSetup: Bool = false
     
     init(appState: AppState) {
         self.appState = appState
@@ -107,10 +108,24 @@ struct ChatView: View {
             }
         }
         .onAppear {
-            // Set up callback for house creation
-            viewModel.onHouseCreated = { house, profile in
-                appState.setCurrentHouse(house)
-                appState.setHouseProfile(profile)
+            // Set up callback for house creation - only once
+            if !callbackSetup {
+                print("🔧 Setting up onHouseCreated callback in ChatView")
+                viewModel.onHouseCreated = { house, profile in
+                    print("🎯 onHouseCreated callback invoked!")
+                    print("   House ID: \(house.id)")
+                    print("   Profile ID: \(profile.id)")
+                    print("   Profile location: \(profile.location?.address ?? "nil")")
+                    print("   Profile age: \(profile.age?.description ?? "nil")")
+                    print("   Profile systems: \(profile.systems.count)")
+                    
+                    // Set both house and profile directly (we just created them)
+                    appState.setCurrentHouse(house, profile: profile)
+                    
+                    print("✅ After setCurrentHouse - appState.currentHouse: \(appState.currentHouse?.id ?? "nil")")
+                    print("✅ After setCurrentHouse - appState.houseProfile: \(appState.houseProfile?.id ?? "nil")")
+                }
+                callbackSetup = true
             }
         }
         .alert("Error", isPresented: .constant(viewModel.errorMessage != nil)) {
