@@ -20,24 +20,11 @@ struct ContentView: View {
                             Label("Chat", systemImage: "message.fill")
                         }
                     
-                    if appState.currentHouse != nil {
-                        HouseProfileView(appState: appState)
-                            .tabItem {
-                                Label("Profile", systemImage: "house.fill")
-                            }
-                    } else {
-                        // Show placeholder during onboarding
-                        VStack(spacing: 20) {
-                            Image(systemName: "house.fill")
-                                .font(.system(size: 60))
-                                .foregroundColor(.secondary)
-                            Text("Complete setup in Chat")
-                                .foregroundColor(.secondary)
-                        }
+                    // Always show HouseProfileView - it handles empty profiles gracefully
+                    HouseProfileView(appState: appState)
                         .tabItem {
                             Label("Profile", systemImage: "house.fill")
                         }
-                    }
                 }
             } else {
                 // Show loading while authenticating
