@@ -84,6 +84,19 @@ struct HouseProfileView: View {
                     }
                 }
             }
+            
+            Section {
+                Button(role: .destructive, action: {
+                    Task {
+                        await deleteAllData()
+                    }
+                }) {
+                    HStack {
+                        Image(systemName: "trash")
+                        Text("Delete All Data")
+                    }
+                }
+            }
         }
         .navigationTitle("House Profile")
         .navigationBarTitleDisplayMode(.inline)
@@ -125,6 +138,25 @@ struct HouseProfileView: View {
             return .orange
         case .high:
             return .red
+        }
+    }
+    
+    private func deleteAllData() async {
+        guard let houseId = appState.currentHouse?.id else { return }
+        
+        do {
+            // Delete all data from Firebase
+            try await FirebaseService.shared.deleteAllDataForHouse(houseId: houseId)
+            
+            // Reset app state
+            await MainActor.run {
+                appState.currentHouse = nil
+                appState.houseProfile = nil
+            }
+            
+            print("✅ All data cleared. Onboarding will restart in Chat.")
+        } catch {
+            print("❌ Failed to clear data: \(error)")
         }
     }
 }

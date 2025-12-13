@@ -64,25 +64,96 @@ class ChatViewModel: ObservableObject {
     }
     
     func updateHouseId(_ newHouseId: String) {
-        self.houseId = newHouseId
-        // Recreate message listener for new house
-        messageListener?.remove()
-        setupMessageListener()
+        // If we're in onboarding, preserve existing messages and update their houseId
+        if isOnboarding {
+            // Update houseId in all existing messages
+            for i in 0..<messages.count {
+                messages[i].houseId = newHouseId
+            }
+            
+            // Save existing messages to Firebase with the new house ID BEFORE setting up listener
+            // This ensures they're in Firebase when the listener loads
+            // Only save messages that haven't been saved yet (those with placeholder house ID)
+            Task {
+                // Save messages that were created with placeholder house ID
+                // Messages already saved will be loaded by the listener
+                let messagesToSave = messages.filter { $0.houseId == newHouseId }
+                
+                for message in messagesToSave {
+                    do {
+                        // Check if message already exists in Firebase by trying to fetch it
+                        // If it doesn't exist or has different houseId, save it
+                        try await firebaseService.saveChatMessage(message)
+                        print("✅ Saved message to Firebase: \(message.id)")
+                    } catch {
+                        print("⚠️ Failed to save message to Firebase: \(error)")
+                    }
+                }
+                
+                // Now update houseId and set up listener
+                await MainActor.run {
+                    self.houseId = newHouseId
+                    // Recreate message listener for new house
+                    self.messageListener?.remove()
+                    self.setupMessageListener()
+                }
+            }
+        } else {
+            // Not in onboarding, just update normally
+            self.houseId = newHouseId
+            messageListener?.remove()
+            setupMessageListener()
+        }
     }
     
     private func setupMessageListener() {
         // Only set up listener if we have a real house ID
         guard houseId != "placeholder-house-id" else { return }
         
+        // Save current messages before setting up listener (in case we're transitioning from onboarding)
+        let currentMessages = messages
+        
         // Listen for real-time message updates
-        messageListener = firebaseService.observeChatMessages(houseId: houseId) { [weak self] messages in
+        messageListener = firebaseService.observeChatMessages(houseId: houseId) { [weak self] firebaseMessages in
             Task { @MainActor in
-                self?.messages = messages
+                guard let self = self else { return }
+                
+                // If we're in onboarding and have local messages, merge them with Firebase messages
+                if self.isOnboarding && !currentMessages.isEmpty {
+                    // Combine: existing local messages + new Firebase messages
+                    // Use a Set to avoid duplicates based on message ID
+                    var mergedMessages: [ChatMessage] = []
+                    var seenIds = Set<String>()
+                    
+                    // First, add all current local messages
+                    for message in currentMessages {
+                        if !seenIds.contains(message.id) {
+                            mergedMessages.append(message)
+                            seenIds.insert(message.id)
+                        }
+                    }
+                    
+                    // Then, add Firebase messages we haven't seen
+                    for message in firebaseMessages {
+                        if !seenIds.contains(message.id) {
+                            mergedMessages.append(message)
+                            seenIds.insert(message.id)
+                        }
+                    }
+                    
+                    // Sort by timestamp
+                    mergedMessages.sort { $0.timestamp < $1.timestamp }
+                    
+                    self.messages = mergedMessages
+                } else {
+                    // Normal case: just use Firebase messages
+                    self.messages = firebaseMessages
+                }
             }
         }
     }
     
-    private func startOnboarding() {
+    func startOnboarding() {
         // Don't load messages during onboarding - start fresh
         let welcomeMessage = ChatMessage(
             houseId: houseId,
@@ -95,6 +166,27 @@ class ChatViewModel: ObservableObject {
         
         // Set up the first question state
         currentOnboardingQuestion = .location
+    }
+    
+    func resetForNewOnboarding() {
+        // Reset all onboarding state
+        messages = []
+        onboardingData = HouseOnboardingData()
+        currentOnboardingQuestion = nil
+        currentSystemIndex = 0
+        createdHouse = nil
+        createdProfile = nil
+        isOnboarding = true
+        
+        // Remove message listener
+        messageListener?.remove()
+        messageListener = nil
+        
+        // Reset house ID to placeholder (this will also remove the listener)
+        updateHouseId("placeholder-house-id")
+        
+        // Start fresh onboarding
+        startOnboarding()
     }
     
     // Systems that are essentially universal and shouldn't be asked about
@@ -223,16 +315,23 @@ class ChatViewModel: ObservableObject {
         // Instructions
         context += """
         
-        Guidelines:
+        CRITICAL ONBOARDING RULES:
+        - You are ONLY collecting information. Do NOT give advice, suggestions, or detailed explanations.
+        - Do NOT discuss maintenance, repairs, or recommendations.
+        - Do NOT provide information about systems, roofs, foundations, or any other topics.
+        - Your ONLY job is to ask questions and acknowledge answers briefly.
         - Be friendly, conversational, and natural
-        - Acknowledge what they just said if relevant
+        - Acknowledge what they just said in ONE sentence maximum
         - Ask ONE question at a time
         - CRITICAL: Every response MUST end with a question. Never say "let's move on" or "next question" without actually asking it.
-        - If they give you the information you need, acknowledge it briefly (1 sentence) and then immediately ask the next question
+        - If they give you the information you need, acknowledge it briefly (1 sentence max) and then immediately ask the next question
         - If their answer is unclear, ask for clarification in a friendly way
-        - Keep responses brief (1-2 sentences max)
+        - Keep responses VERY brief (1-2 sentences max total)
         - Always end with a question mark (?)
-        - Don't be repetitive - if you just asked a question, don't ask it again unless you need clarification
+        - Do NOT provide lists, bullet points, or detailed information
+        - Do NOT discuss the condition of the house or give any advice
+        - Example of GOOD response: "Thanks! Now, how old is your house?"
+        - Example of BAD response: "Being built in 2009, your home should generally be in good condition. However, there may be some areas that need attention. 1. Roofing: If it hasn't been replaced..."
         """
         
         return try await openAIService.sendMessage(
@@ -284,7 +383,10 @@ class ChatViewModel: ObservableObject {
         )
         
         // Add user message immediately for better UX
-        messages.append(userMessage)
+        // Check for duplicates before adding
+        if !messages.contains(where: { $0.id == userMessage.id }) {
+            messages.append(userMessage)
+        }
         
         Task {
             do {
@@ -336,7 +438,10 @@ class ChatViewModel: ObservableObject {
                     }
                     
                     await MainActor.run {
-                        messages.append(agentMessage)
+                        // Check for duplicates before adding
+                        if !messages.contains(where: { $0.id == agentMessage.id }) {
+                            messages.append(agentMessage)
+                        }
                         isTyping = false
                         
                         // If data was extracted, advance to next question
@@ -391,7 +496,10 @@ class ChatViewModel: ObservableObject {
                     }
                     
                     await MainActor.run {
-                        messages.append(agentMessage)
+                        // Check for duplicates before adding
+                        if !messages.contains(where: { $0.id == agentMessage.id }) {
+                            messages.append(agentMessage)
+                        }
                         isTyping = false
                     }
                 }

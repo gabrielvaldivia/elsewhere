@@ -105,6 +105,9 @@ struct ChatView: View {
             if let houseId = newHouseId, viewModel.isOnboarding {
                 viewModel.updateHouseId(houseId)
                 viewModel.isOnboarding = false
+            } else if newHouseId == nil && !viewModel.isOnboarding {
+                // House was deleted, restart onboarding
+                viewModel.resetForNewOnboarding()
             }
         }
         .onAppear {
