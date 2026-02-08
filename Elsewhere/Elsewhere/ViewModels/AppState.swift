@@ -16,38 +16,86 @@ class AppState: ObservableObject {
     @Published var houseProfile: HouseProfile?
     @Published var isAuthenticated: Bool = false
     @Published var isAuthenticating: Bool = true
-    
-    // For Phase 1 MVP: Single house, single user
-    // TODO: Expand for multi-house support in Phase 3
-    
+    @Published var showAuthenticationView: Bool = false
+    @Published var userHouses: [House] = []
+
     init() {
-        // TODO: Load from local storage or Firebase
-        // For now, we'll start with no house (onboarding needed)
+        // Check for existing session on launch
         Task {
-            await signInAnonymously()
+            await checkExistingSession()
+        }
+    }
+
+    // MARK: - Session Management
+
+    func checkExistingSession() async {
+        isAuthenticating = true
+        print("🔐 checkExistingSession: Checking for existing session...")
+
+        // Check if user is already signed in
+        if let existingUser = AuthenticationService.shared.getCurrentUser() {
+            print("🔐 checkExistingSession: Found existing user: \(existingUser.id), isAnonymous: \(existingUser.isAnonymous)")
+            currentUser = existingUser
+            isAuthenticated = true
+            await loadUserHouses(autoSelectFirst: true)
+            isAuthenticating = false
+            print("✅ Restored session for user: \(existingUser.id)")
+        } else {
+            print("🔐 checkExistingSession: No existing session found")
+            // No existing session, show authentication view
+            isAuthenticating = false
+            showAuthenticationView = true
+        }
+    }
+
+    // MARK: - Authentication Handlers
+
+    func handleSuccessfulSignIn(_ user: User) {
+        currentUser = user
+        isAuthenticated = true
+        showAuthenticationView = false
+        print("✅ Signed in as user: \(user.id)")
+
+        Task {
+            await loadUserHouses(autoSelectFirst: true)
+        }
+    }
+
+    func handleAccountUpgrade(_ user: User) {
+        currentUser = user
+        print("✅ Account upgraded for user: \(user.id)")
+    }
+
+    func signOut() {
+        do {
+            try AuthenticationService.shared.signOut()
+            currentUser = nil
+            currentHouse = nil
+            houseProfile = nil
+            userHouses = []
+            isAuthenticated = false
+            showAuthenticationView = true
+            print("✅ Signed out successfully")
+        } catch {
+            print("❌ Sign out failed: \(error)")
         }
     }
     
     func signInAnonymously() async {
-        await MainActor.run {
-            self.isAuthenticating = true
-        }
-        
+        isAuthenticating = true
+
         do {
             let user = try await FirebaseService.shared.signInAnonymously()
-            await MainActor.run {
-                self.currentUser = user
-                self.isAuthenticated = true
-                self.isAuthenticating = false
-                print("✅ Authenticated as user: \(user.id)")
-            }
-            
+            currentUser = user
+            isAuthenticated = true
+            isAuthenticating = false
+            showAuthenticationView = false
+            print("✅ Authenticated anonymously as user: \(user.id)")
+
             // After authentication, check if user has existing houses
-            await loadUserHouses()
+            await loadUserHouses(autoSelectFirst: true)
         } catch {
-            await MainActor.run {
-                self.isAuthenticating = false
-            }
+            isAuthenticating = false
             print("❌ Failed to sign in anonymously: \(error)")
         }
     }
@@ -84,26 +132,36 @@ class AppState: ObservableObject {
         }
     }
     
-    func loadUserHouses() async {
-        guard let userId = currentUser?.id else { return }
-        
+    func loadUserHouses(autoSelectFirst: Bool = false) async {
+        guard let userId = currentUser?.id else {
+            print("❌ loadUserHouses: No current user")
+            return
+        }
+
+        print("🏠 loadUserHouses: Loading houses for user \(userId)")
+
         do {
             let houses = try await FirebaseService.shared.fetchUserHouses(userId: userId)
-            await MainActor.run {
-                if let firstHouse = houses.first {
-                    self.currentHouse = firstHouse
-                    // Load profile for the house
-                    Task {
-                        if let profile = try? await FirebaseService.shared.fetchHouseProfile(houseId: firstHouse.id) {
-                            await MainActor.run {
-                                self.houseProfile = profile
-                            }
-                        }
-                    }
+            print("🏠 loadUserHouses: Found \(houses.count) houses")
+
+            userHouses = houses
+
+            // Only auto-select first house if requested (e.g., on initial login)
+            if autoSelectFirst, currentHouse == nil, let firstHouse = houses.first {
+                print("🏠 loadUserHouses: Auto-selecting first house: \(firstHouse.id) (\(firstHouse.name ?? "unnamed"))")
+                currentHouse = firstHouse
+                // Load profile for the house
+                if let profile = try? await FirebaseService.shared.fetchHouseProfile(houseId: firstHouse.id) {
+                    houseProfile = profile
+                    print("🏠 loadUserHouses: Loaded profile for house")
+                } else {
+                    print("⚠️ loadUserHouses: No profile found for house \(firstHouse.id)")
                 }
+            } else if houses.isEmpty {
+                print("⚠️ loadUserHouses: No houses found for user")
             }
         } catch {
-            print("Failed to load user houses: \(error)")
+            print("❌ loadUserHouses: Failed to load houses: \(error)")
         }
     }
     
@@ -119,17 +177,26 @@ struct User: Identifiable, Codable {
     var email: String
     var displayName: String?
     var createdAt: Date
-    
+    var isAnonymous: Bool
+    var appleUserId: String?  // Apple Sign In user identifier
+    var photoURL: String?
+
     init(
         id: String = UUID().uuidString,
         email: String,
         displayName: String? = nil,
-        createdAt: Date = Date()
+        createdAt: Date = Date(),
+        isAnonymous: Bool = true,
+        appleUserId: String? = nil,
+        photoURL: String? = nil
     ) {
         self.id = id
         self.email = email
         self.displayName = displayName
         self.createdAt = createdAt
+        self.isAnonymous = isAnonymous
+        self.appleUserId = appleUserId
+        self.photoURL = photoURL
     }
 }
 

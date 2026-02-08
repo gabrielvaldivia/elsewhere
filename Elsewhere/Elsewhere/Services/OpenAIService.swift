@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import Combine
 
 @MainActor
 class OpenAIService {
@@ -30,16 +31,37 @@ class OpenAIService {
         systemPrompt: String? = nil,
         temperature: Double = 0.7
     ) async throws -> String {
+        let result = try await sendMessageWithTools(
+            messages: messages,
+            houseProfile: houseProfile,
+            houseId: houseProfile?.houseId ?? "",
+            userId: "",
+            systemPrompt: systemPrompt,
+            temperature: temperature,
+            enableTools: false
+        )
+        return result.content
+    }
+
+    func sendMessageWithTools(
+        messages: [ChatMessage],
+        houseProfile: HouseProfile?,
+        houseId: String,
+        userId: String,
+        systemPrompt: String? = nil,
+        temperature: Double = 0.7,
+        enableTools: Bool = true
+    ) async throws -> ChatResponse {
         guard !apiKey.isEmpty else {
             throw OpenAIError.apiKeyMissing
         }
-        
+
         // Build system prompt
         let defaultSystemPrompt: String
         if houseProfile != nil {
             defaultSystemPrompt = """
             You are Upstate Home Copilot, an AI assistant that helps owners manage their second homes.
-            
+
             Your role:
             - Assist, suggest, draft, and remember
             - Never pretend to be a contractor or property manager
@@ -47,10 +69,10 @@ class OpenAIService {
             - Be comfortable with partial knowledge and uncertainty
             - Stay calm and timely, not urgent by default
             - Know when to stay quiet
-            
+
             House Context:
             \(houseProfileContext(houseProfile))
-            
+
             Guidelines:
             - Ask questions to learn about the house when relevant
             - Suggest tasks based on house profile and systems
@@ -58,11 +80,12 @@ class OpenAIService {
             - Reference specific house details in your responses
             - Offer to help complete tasks or coordinate vendors
             - Be concise and actionable
+            - Use the available tools to update house information, add vendors, create tasks, check weather, and find service providers when the user's request warrants it
             """
         } else {
             defaultSystemPrompt = """
             You are Upstate Home Copilot, an AI assistant that helps owners manage their second homes.
-            
+
             Your role:
             - Assist, suggest, draft, and remember
             - Never pretend to be a contractor or property manager
@@ -70,61 +93,107 @@ class OpenAIService {
             - Ask one question at a time
             """
         }
-        
+
         let finalSystemPrompt = systemPrompt ?? defaultSystemPrompt
-        
+
         // Convert messages to OpenAI format
         var openAIMessages: [[String: Any]] = [
             ["role": "system", "content": finalSystemPrompt]
         ]
-        
+
         for message in messages {
+            let role = message.role == .agent ? "assistant" : message.role.rawValue
             openAIMessages.append([
-                "role": message.role.rawValue,
+                "role": role,
                 "content": message.content
             ])
         }
-        
+
         // Prepare request
-        let requestBody: [String: Any] = [
-            "model": "gpt-4", // Can be changed to gpt-3.5-turbo for cost savings
+        var requestBody: [String: Any] = [
+            "model": "gpt-4",
             "messages": openAIMessages,
             "temperature": temperature,
             "stream": false
         ]
-        
+
+        // Add tools if enabled and we have a house profile
+        if enableTools && houseProfile != nil {
+            requestBody["tools"] = ChatToolsService.shared.toolDefinitions
+            requestBody["tool_choice"] = "auto"
+        }
+
         guard let url = URL(string: baseURL) else {
             throw OpenAIError.invalidURL
         }
-        
+
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
-        
+
         // Send request
         let (data, response) = try await URLSession.shared.data(for: request)
-        
+
         guard let httpResponse = response as? HTTPURLResponse else {
             throw OpenAIError.invalidResponse
         }
-        
+
         guard (200...299).contains(httpResponse.statusCode) else {
             let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
             throw OpenAIError.apiError(statusCode: httpResponse.statusCode, message: errorMessage)
         }
-        
+
         // Parse response
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let choices = json["choices"] as? [[String: Any]],
               let firstChoice = choices.first,
-              let message = firstChoice["message"] as? [String: Any],
-              let content = message["content"] as? String else {
+              let message = firstChoice["message"] as? [String: Any] else {
             throw OpenAIError.invalidResponse
         }
-        
-        return content
+
+        // Check for tool calls
+        if let toolCalls = message["tool_calls"] as? [[String: Any]], !toolCalls.isEmpty {
+            var toolResults: [ToolResult] = []
+
+            for toolCall in toolCalls {
+                guard let function = toolCall["function"] as? [String: Any],
+                      let name = function["name"] as? String,
+                      let argumentsString = function["arguments"] as? String,
+                      let argumentsData = argumentsString.data(using: .utf8),
+                      let arguments = try? JSONSerialization.jsonObject(with: argumentsData) as? [String: Any] else {
+                    continue
+                }
+
+                do {
+                    let result = try await ChatToolsService.shared.executeTool(
+                        name: name,
+                        arguments: arguments,
+                        houseId: houseId,
+                        userId: userId,
+                        houseProfile: houseProfile
+                    )
+                    toolResults.append(result)
+                } catch {
+                    toolResults.append(ToolResult(success: false, message: error.localizedDescription, data: nil))
+                }
+            }
+
+            // Generate a response that includes tool results
+            let toolMessages = toolResults.map { result in
+                result.success ? "Done: \(result.message)" : "Error: \(result.message)"
+            }.joined(separator: "\n")
+
+            let content = message["content"] as? String ?? ""
+            let combinedContent = content.isEmpty ? toolMessages : "\(content)\n\n\(toolMessages)"
+
+            return ChatResponse(content: combinedContent, toolResults: toolResults)
+        }
+
+        // No tool calls, just return content
+        let content = message["content"] as? String ?? ""
+        return ChatResponse(content: content, toolResults: nil)
     }
     
     private func houseProfileContext(_ profile: HouseProfile?) -> String {
@@ -162,12 +231,21 @@ class OpenAIService {
     }
 }
 
+struct ChatResponse {
+    let content: String
+    let toolResults: [ToolResult]?
+
+    var hasToolResults: Bool {
+        toolResults?.isEmpty == false
+    }
+}
+
 enum OpenAIError: LocalizedError {
     case apiKeyMissing
     case invalidURL
     case invalidResponse
     case apiError(statusCode: Int, message: String)
-    
+
     var errorDescription: String? {
         switch self {
         case .apiKeyMissing:

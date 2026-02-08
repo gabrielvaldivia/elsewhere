@@ -30,7 +30,8 @@ class FirebaseService: ObservableObject {
             id: authResult.user.uid,
             email: authResult.user.email ?? "",
             displayName: authResult.user.displayName,
-            createdAt: Date()
+            createdAt: Date(),
+            isAnonymous: true
         )
         return user
     }
@@ -85,7 +86,10 @@ class FirebaseService: ObservableObject {
             "id": user.id,
             "email": user.email,
             "displayName": user.displayName ?? NSNull(),
-            "createdAt": Timestamp(date: user.createdAt)
+            "createdAt": Timestamp(date: user.createdAt),
+            "isAnonymous": user.isAnonymous,
+            "appleUserId": user.appleUserId ?? NSNull(),
+            "photoURL": user.photoURL ?? NSNull()
         ])
     }
     
@@ -126,16 +130,390 @@ class FirebaseService: ObservableObject {
     }
     
     func fetchUserHouses(userId: String) async throws -> [House] {
-        // For Phase 1: Simple query for houses where user is owner
-        // In Phase 3, we'll use HouseAccess collection
-        let snapshot = try await db.collection("houses")
+        print("🏠 Fetching houses for user: \(userId)")
+
+        // Query for houses where user is owner (simpler query, filter isDeleted in memory)
+        let ownerSnapshot = try await db.collection("houses")
             .whereField("ownerIds", arrayContains: userId)
-            .whereField("isDeleted", isEqualTo: false)
             .getDocuments()
-        
-        return try snapshot.documents.map { doc in
-            try decodeHouse(from: doc.data())
+
+        print("🏠 Found \(ownerSnapshot.documents.count) houses where user is owner")
+
+        var houses = try ownerSnapshot.documents.compactMap { doc -> House? in
+            let house = try decodeHouse(from: doc.data())
+            // Filter out deleted houses in memory
+            return house.isDeleted ? nil : house
         }
+
+        // Also query for houses where user is member
+        let memberSnapshot = try await db.collection("houses")
+            .whereField("memberIds", arrayContains: userId)
+            .getDocuments()
+
+        print("🏠 Found \(memberSnapshot.documents.count) houses where user is member")
+
+        let memberHouses = try memberSnapshot.documents.compactMap { doc -> House? in
+            let house = try decodeHouse(from: doc.data())
+            return house.isDeleted ? nil : house
+        }
+
+        // Combine and deduplicate
+        let existingIds = Set(houses.map { $0.id })
+        for house in memberHouses {
+            if !existingIds.contains(house.id) {
+                houses.append(house)
+            }
+        }
+
+        print("🏠 Total houses after deduplication: \(houses.count)")
+        return houses.sorted { $0.createdAt < $1.createdAt }
+    }
+
+    func updateHouse(_ house: House) async throws {
+        var updatedHouse = house
+        updatedHouse.updatedAt = Date()
+
+        let houseRef = db.collection("houses").document(house.id)
+        try await houseRef.setData([
+            "id": updatedHouse.id,
+            "name": updatedHouse.name ?? NSNull(),
+            "createdAt": Timestamp(date: updatedHouse.createdAt),
+            "updatedAt": Timestamp(date: updatedHouse.updatedAt),
+            "createdBy": updatedHouse.createdBy,
+            "ownerIds": updatedHouse.ownerIds,
+            "memberIds": updatedHouse.memberIds,
+            "isDeleted": updatedHouse.isDeleted,
+            "deletedAt": updatedHouse.deletedAt != nil ? Timestamp(date: updatedHouse.deletedAt!) : NSNull(),
+            "deletedBy": updatedHouse.deletedBy ?? NSNull()
+        ])
+    }
+
+    // MARK: - Invitation Operations
+
+    func createInvitation(_ invitation: Invitation) async throws {
+        let inviteRef = db.collection("invitations").document(invitation.id)
+        try await inviteRef.setData([
+            "id": invitation.id,
+            "email": invitation.email.lowercased(),
+            "houseId": invitation.houseId,
+            "houseName": invitation.houseName ?? NSNull(),
+            "role": invitation.role.rawValue,
+            "invitedBy": invitation.invitedBy,
+            "inviterName": invitation.inviterName ?? NSNull(),
+            "status": invitation.status.rawValue,
+            "createdAt": Timestamp(date: invitation.createdAt),
+            "expiresAt": Timestamp(date: invitation.expiresAt)
+        ])
+    }
+
+    func fetchPendingInvitations(forEmail email: String) async throws -> [Invitation] {
+        let snapshot = try await db.collection("invitations")
+            .whereField("email", isEqualTo: email.lowercased())
+            .whereField("status", isEqualTo: InvitationStatus.pending.rawValue)
+            .getDocuments()
+
+        return try snapshot.documents.compactMap { doc in
+            try decodeInvitation(from: doc.data())
+        }.filter { !$0.isExpired }
+    }
+
+    func fetchInvitations(forHouse houseId: String) async throws -> [Invitation] {
+        let snapshot = try await db.collection("invitations")
+            .whereField("houseId", isEqualTo: houseId)
+            .getDocuments()
+
+        return try snapshot.documents.compactMap { doc in
+            try decodeInvitation(from: doc.data())
+        }
+    }
+
+    func updateInvitationStatus(_ invitationId: String, status: InvitationStatus) async throws {
+        let inviteRef = db.collection("invitations").document(invitationId)
+        try await inviteRef.updateData([
+            "status": status.rawValue
+        ])
+    }
+
+    func acceptInvitation(_ invitation: Invitation, userId: String) async throws {
+        // Update invitation status
+        try await updateInvitationStatus(invitation.id, status: .accepted)
+
+        // Add user to house
+        let house = try await fetchHouse(houseId: invitation.houseId)
+        var updatedHouse = house
+
+        switch invitation.role {
+        case .owner:
+            if !updatedHouse.ownerIds.contains(userId) {
+                updatedHouse.ownerIds.append(userId)
+            }
+        case .member:
+            if !updatedHouse.memberIds.contains(userId) {
+                updatedHouse.memberIds.append(userId)
+            }
+        }
+
+        try await updateHouse(updatedHouse)
+    }
+
+    func deleteInvitation(_ invitationId: String) async throws {
+        try await db.collection("invitations").document(invitationId).delete()
+    }
+
+    // MARK: - House Access Operations
+
+    func fetchHouseMembers(houseId: String) async throws -> [HouseAccess] {
+        let house = try await fetchHouse(houseId: houseId)
+        var members: [HouseAccess] = []
+
+        // Create HouseAccess entries for owners
+        for ownerId in house.ownerIds {
+            if let user = try? await fetchUser(userId: ownerId) {
+                members.append(HouseAccess(
+                    userId: ownerId,
+                    userEmail: user.email,
+                    userName: user.displayName,
+                    houseId: houseId,
+                    role: .owner,
+                    grantedBy: house.createdBy
+                ))
+            } else {
+                members.append(HouseAccess(
+                    userId: ownerId,
+                    houseId: houseId,
+                    role: .owner,
+                    grantedBy: house.createdBy
+                ))
+            }
+        }
+
+        // Create HouseAccess entries for members
+        for memberId in house.memberIds {
+            if let user = try? await fetchUser(userId: memberId) {
+                members.append(HouseAccess(
+                    userId: memberId,
+                    userEmail: user.email,
+                    userName: user.displayName,
+                    houseId: houseId,
+                    role: .member,
+                    grantedBy: house.createdBy
+                ))
+            } else {
+                members.append(HouseAccess(
+                    userId: memberId,
+                    houseId: houseId,
+                    role: .member,
+                    grantedBy: house.createdBy
+                ))
+            }
+        }
+
+        return members
+    }
+
+    func removeUserFromHouse(userId: String, houseId: String) async throws {
+        var house = try await fetchHouse(houseId: houseId)
+        house.ownerIds.removeAll { $0 == userId }
+        house.memberIds.removeAll { $0 == userId }
+        try await updateHouse(house)
+    }
+
+    func updateUserRole(userId: String, houseId: String, newRole: HouseRole) async throws {
+        var house = try await fetchHouse(houseId: houseId)
+
+        // Remove from current lists
+        house.ownerIds.removeAll { $0 == userId }
+        house.memberIds.removeAll { $0 == userId }
+
+        // Add to appropriate list
+        switch newRole {
+        case .owner:
+            house.ownerIds.append(userId)
+        case .member:
+            house.memberIds.append(userId)
+        }
+
+        try await updateHouse(house)
+    }
+
+    private func decodeInvitation(from data: [String: Any]) throws -> Invitation {
+        guard let id = data["id"] as? String,
+              let email = data["email"] as? String,
+              let houseId = data["houseId"] as? String,
+              let roleString = data["role"] as? String,
+              let role = HouseRole(rawValue: roleString),
+              let invitedBy = data["invitedBy"] as? String,
+              let statusString = data["status"] as? String,
+              let status = InvitationStatus(rawValue: statusString) else {
+            throw FirebaseError.invalidData
+        }
+
+        return Invitation(
+            id: id,
+            email: email,
+            houseId: houseId,
+            houseName: data["houseName"] as? String,
+            role: role,
+            invitedBy: invitedBy,
+            inviterName: data["inviterName"] as? String,
+            status: status,
+            createdAt: (data["createdAt"] as? Timestamp)?.dateValue() ?? Date(),
+            expiresAt: (data["expiresAt"] as? Timestamp)?.dateValue() ?? Date()
+        )
+    }
+
+    // MARK: - Maintenance Item Operations
+
+    func saveMaintenanceItem(_ item: MaintenanceItem) async throws {
+        let itemRef = db.collection("maintenanceItems").document(item.id)
+        var data: [String: Any] = [
+            "id": item.id,
+            "houseId": item.houseId,
+            "title": item.title,
+            "category": item.category.rawValue,
+            "priority": item.priority.rawValue,
+            "status": item.status.rawValue,
+            "isWeatherTriggered": item.isWeatherTriggered,
+            "createdAt": Timestamp(date: item.createdAt),
+            "updatedAt": Timestamp(date: item.updatedAt),
+            "createdBy": item.createdBy
+        ]
+
+        if let description = item.description {
+            data["description"] = description
+        }
+        if let dueDate = item.dueDate {
+            data["dueDate"] = Timestamp(date: dueDate)
+        }
+        if let reminderDate = item.reminderDate {
+            data["reminderDate"] = Timestamp(date: reminderDate)
+        }
+        if let relatedSystem = item.relatedSystem {
+            data["relatedSystem"] = relatedSystem.rawValue
+        }
+        if let relatedVendorId = item.relatedVendorId {
+            data["relatedVendorId"] = relatedVendorId
+        }
+        if let weatherTrigger = item.weatherTrigger {
+            data["weatherTrigger"] = [
+                "type": weatherTrigger.type.rawValue,
+                "threshold": weatherTrigger.threshold ?? NSNull()
+            ] as [String : Any]
+        }
+        if let recurrence = item.recurrence {
+            data["recurrence"] = [
+                "frequency": recurrence.frequency.rawValue,
+                "interval": recurrence.interval,
+                "endDate": recurrence.endDate != nil ? Timestamp(date: recurrence.endDate!) : NSNull()
+            ] as [String : Any]
+        }
+        if let notes = item.notes {
+            data["notes"] = notes
+        }
+        if let completedAt = item.completedAt {
+            data["completedAt"] = Timestamp(date: completedAt)
+        }
+
+        try await itemRef.setData(data)
+    }
+
+    func fetchMaintenanceItems(houseId: String) async throws -> [MaintenanceItem] {
+        let snapshot = try await db.collection("maintenanceItems")
+            .whereField("houseId", isEqualTo: houseId)
+            .order(by: "createdAt", descending: true)
+            .getDocuments()
+
+        return try snapshot.documents.compactMap { doc in
+            try decodeMaintenanceItem(from: doc.data())
+        }
+    }
+
+    func fetchPendingMaintenanceItems(houseId: String) async throws -> [MaintenanceItem] {
+        let snapshot = try await db.collection("maintenanceItems")
+            .whereField("houseId", isEqualTo: houseId)
+            .whereField("status", in: [MaintenanceStatus.pending.rawValue, MaintenanceStatus.inProgress.rawValue])
+            .getDocuments()
+
+        return try snapshot.documents.compactMap { doc in
+            try decodeMaintenanceItem(from: doc.data())
+        }.sorted { item1, item2 in
+            // Sort by priority first, then by due date
+            if item1.priority.sortOrder != item2.priority.sortOrder {
+                return item1.priority.sortOrder < item2.priority.sortOrder
+            }
+            if let date1 = item1.dueDate, let date2 = item2.dueDate {
+                return date1 < date2
+            }
+            return item1.dueDate != nil
+        }
+    }
+
+    func deleteMaintenanceItem(_ itemId: String) async throws {
+        try await db.collection("maintenanceItems").document(itemId).delete()
+    }
+
+    private func decodeMaintenanceItem(from data: [String: Any]) throws -> MaintenanceItem {
+        guard let id = data["id"] as? String,
+              let houseId = data["houseId"] as? String,
+              let title = data["title"] as? String,
+              let categoryString = data["category"] as? String,
+              let category = MaintenanceCategory(rawValue: categoryString),
+              let priorityString = data["priority"] as? String,
+              let priority = MaintenancePriority(rawValue: priorityString),
+              let statusString = data["status"] as? String,
+              let status = MaintenanceStatus(rawValue: statusString),
+              let createdBy = data["createdBy"] as? String else {
+            throw FirebaseError.invalidData
+        }
+
+        var weatherTrigger: WeatherTrigger?
+        if let triggerData = data["weatherTrigger"] as? [String: Any],
+           let typeString = triggerData["type"] as? String,
+           let type = WeatherTriggerType(rawValue: typeString) {
+            weatherTrigger = WeatherTrigger(
+                type: type,
+                threshold: triggerData["threshold"] as? Double
+            )
+        }
+
+        var recurrence: RecurrencePattern?
+        if let recurrenceData = data["recurrence"] as? [String: Any],
+           let frequencyString = recurrenceData["frequency"] as? String,
+           let frequency = RecurrenceFrequency(rawValue: frequencyString),
+           let interval = recurrenceData["interval"] as? Int {
+            recurrence = RecurrencePattern(
+                frequency: frequency,
+                interval: interval,
+                endDate: (recurrenceData["endDate"] as? Timestamp)?.dateValue()
+            )
+        }
+
+        var relatedSystem: SystemType?
+        if let systemString = data["relatedSystem"] as? String {
+            relatedSystem = SystemType(rawValue: systemString)
+        }
+
+        return MaintenanceItem(
+            id: id,
+            houseId: houseId,
+            title: title,
+            description: data["description"] as? String,
+            category: category,
+            priority: priority,
+            status: status,
+            dueDate: (data["dueDate"] as? Timestamp)?.dateValue(),
+            reminderDate: (data["reminderDate"] as? Timestamp)?.dateValue(),
+            relatedSystem: relatedSystem,
+            relatedVendorId: data["relatedVendorId"] as? String,
+            isWeatherTriggered: data["isWeatherTriggered"] as? Bool ?? false,
+            weatherTrigger: weatherTrigger,
+            recurrence: recurrence,
+            notes: data["notes"] as? String,
+            createdAt: (data["createdAt"] as? Timestamp)?.dateValue() ?? Date(),
+            updatedAt: (data["updatedAt"] as? Timestamp)?.dateValue() ?? Date(),
+            completedAt: (data["completedAt"] as? Timestamp)?.dateValue(),
+            createdBy: createdBy
+        )
     }
     
     // MARK: - House Profile Operations
@@ -364,11 +742,22 @@ class FirebaseService: ObservableObject {
               let email = data["email"] as? String else {
             throw FirebaseError.invalidData
         }
-        
+
         let displayName = data["displayName"] as? String
         let createdAt = (data["createdAt"] as? Timestamp)?.dateValue() ?? Date()
-        
-        return User(id: id, email: email, displayName: displayName, createdAt: createdAt)
+        let isAnonymous = data["isAnonymous"] as? Bool ?? true
+        let appleUserId = data["appleUserId"] as? String
+        let photoURL = data["photoURL"] as? String
+
+        return User(
+            id: id,
+            email: email,
+            displayName: displayName,
+            createdAt: createdAt,
+            isAnonymous: isAnonymous,
+            appleUserId: appleUserId,
+            photoURL: photoURL
+        )
     }
     
     private func decodeHouse(from data: [String: Any]) throws -> House {
@@ -510,13 +899,132 @@ class FirebaseService: ObservableObject {
             relatedContactId: relatedContactId
         )
     }
+    // MARK: - Vendor Operations
+
+    func saveVendor(_ vendor: Vendor) async throws {
+        let vendorRef = db.collection("vendors").document(vendor.id)
+        var data: [String: Any] = [
+            "id": vendor.id,
+            "houseId": vendor.houseId,
+            "name": vendor.name,
+            "category": vendor.category.rawValue,
+            "isFavorite": vendor.isFavorite,
+            "source": vendor.source.rawValue,
+            "createdAt": Timestamp(date: vendor.createdAt),
+            "updatedAt": Timestamp(date: vendor.updatedAt)
+        ]
+
+        if let phone = vendor.phone {
+            data["phone"] = phone
+        }
+        if let email = vendor.email {
+            data["email"] = email
+        }
+        if let address = vendor.address {
+            data["address"] = address
+        }
+        if let notes = vendor.notes {
+            data["notes"] = notes
+        }
+        if let googlePlaceId = vendor.googlePlaceId {
+            data["googlePlaceId"] = googlePlaceId
+        }
+        if let rating = vendor.rating {
+            data["rating"] = rating
+        }
+
+        data["workHistory"] = vendor.workHistory.map { entry -> [String: Any] in
+            var entryData: [String: Any] = [
+                "id": entry.id,
+                "date": Timestamp(date: entry.date),
+                "description": entry.description
+            ]
+            if let cost = entry.cost {
+                entryData["cost"] = cost
+            }
+            if let notes = entry.notes {
+                entryData["notes"] = notes
+            }
+            return entryData
+        }
+
+        try await vendorRef.setData(data)
+    }
+
+    func fetchVendors(houseId: String) async throws -> [Vendor] {
+        let snapshot = try await db.collection("vendors")
+            .whereField("houseId", isEqualTo: houseId)
+            .order(by: "name")
+            .getDocuments()
+
+        return try snapshot.documents.compactMap { doc in
+            try decodeVendor(from: doc.data())
+        }
+    }
+
+    func fetchVendor(vendorId: String) async throws -> Vendor {
+        let doc = try await db.collection("vendors").document(vendorId).getDocument()
+        guard let data = doc.data() else {
+            throw FirebaseError.documentNotFound
+        }
+        return try decodeVendor(from: data)
+    }
+
+    func deleteVendor(_ vendorId: String) async throws {
+        try await db.collection("vendors").document(vendorId).delete()
+    }
+
+    private func decodeVendor(from data: [String: Any]) throws -> Vendor {
+        guard let id = data["id"] as? String,
+              let houseId = data["houseId"] as? String,
+              let name = data["name"] as? String,
+              let categoryString = data["category"] as? String,
+              let category = VendorCategory(rawValue: categoryString),
+              let sourceString = data["source"] as? String,
+              let source = VendorSource(rawValue: sourceString) else {
+            throw FirebaseError.invalidData
+        }
+
+        let workHistoryData = data["workHistory"] as? [[String: Any]] ?? []
+        let workHistory = workHistoryData.compactMap { entry -> WorkHistoryEntry? in
+            guard let id = entry["id"] as? String,
+                  let description = entry["description"] as? String else {
+                return nil
+            }
+            return WorkHistoryEntry(
+                id: id,
+                date: (entry["date"] as? Timestamp)?.dateValue() ?? Date(),
+                description: description,
+                cost: entry["cost"] as? Double,
+                notes: entry["notes"] as? String
+            )
+        }
+
+        return Vendor(
+            id: id,
+            houseId: houseId,
+            name: name,
+            category: category,
+            phone: data["phone"] as? String,
+            email: data["email"] as? String,
+            address: data["address"] as? String,
+            notes: data["notes"] as? String,
+            isFavorite: data["isFavorite"] as? Bool ?? false,
+            source: source,
+            googlePlaceId: data["googlePlaceId"] as? String,
+            rating: data["rating"] as? Double,
+            workHistory: workHistory,
+            createdAt: (data["createdAt"] as? Timestamp)?.dateValue() ?? Date(),
+            updatedAt: (data["updatedAt"] as? Timestamp)?.dateValue() ?? Date()
+        )
+    }
 }
 
 enum FirebaseError: LocalizedError {
     case documentNotFound
     case invalidData
     case authenticationFailed
-    
+
     var errorDescription: String? {
         switch self {
         case .documentNotFound:

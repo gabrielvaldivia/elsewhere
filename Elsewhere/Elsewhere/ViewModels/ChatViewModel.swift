@@ -15,6 +15,7 @@ class ChatViewModel: ObservableObject {
     @Published var messages: [ChatMessage] = []
     @Published var isTyping: Bool = false
     @Published var errorMessage: String?
+    @Published var toolsWereUsed: Bool = false  // Indicates tools modified data
     
     private var houseId: String
     private var userId: String
@@ -456,33 +457,41 @@ class ChatViewModel: ObservableObject {
                         checkAndAdvanceOnboarding()
                     }
                 } else {
-                    // Normal chat mode
+                    // Normal chat mode with tool support
                     isTyping = true
                     errorMessage = nil
-                    
-                    let agentResponse = try await openAIService.sendMessage(
+
+                    let chatResponse = try await openAIService.sendMessageWithTools(
                         messages: messages,
-                        houseProfile: houseProfile
+                        houseProfile: houseProfile,
+                        houseId: houseId,
+                        userId: userId,
+                        enableTools: true
                     )
-                    
+
                     let agentMessage = ChatMessage(
                         houseId: houseId,
                         userId: userId,
                         role: .agent,
-                        content: agentResponse
+                        content: chatResponse.content
                     )
-                    
+
                     // Save agent message to Firebase if we have a real house
                     if houseId != "placeholder-house-id" {
                         try await firebaseService.saveChatMessage(agentMessage)
                     }
-                    
+
                     await MainActor.run {
                         // Check for duplicates before adding
                         if !messages.contains(where: { $0.id == agentMessage.id }) {
                             messages.append(agentMessage)
                         }
                         isTyping = false
+
+                        // If tools were used, notify that data may have changed
+                        if chatResponse.hasToolResults {
+                            toolsWereUsed = true
+                        }
                     }
                 }
             } catch {

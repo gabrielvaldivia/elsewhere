@@ -7,7 +7,7 @@
 
 import Foundation
 
-struct House: Identifiable, Codable {
+struct House: Identifiable, Codable, Hashable {
     var id: String
     var name: String?
     var createdAt: Date

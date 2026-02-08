@@ -25,6 +25,9 @@ struct HouseProfileView: View {
     @State private var bathrooms: Int?
     @State private var lotSize: String = ""
     @State private var showLotSize: Bool = false
+    @State private var showingManageMembers = false
+    @State private var showingInviteMember = false
+    @State private var showingDeleteConfirmation = false
     
     var body: some View {
         NavigationStack {
@@ -306,22 +309,76 @@ struct HouseProfileView: View {
                     }
                 }
             }
-            
-            Section {
-                Button(role: .destructive, action: {
-                    Task {
-                        await deleteAllData()
-                    }
-                }) {
+
+            // Members Section
+            Section("Members") {
+                Button {
+                    showingManageMembers = true
+                } label: {
                     HStack {
-                        Image(systemName: "trash")
-                        Text("Delete All Data")
+                        Image(systemName: "person.2.fill")
+                            .foregroundColor(.blue)
+                        Text("Manage Members")
+                            .foregroundColor(.primary)
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                Button {
+                    showingInviteMember = true
+                } label: {
+                    HStack {
+                        Image(systemName: "person.badge.plus")
+                            .foregroundColor(.green)
+                        Text("Invite Someone")
+                            .foregroundColor(.primary)
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
                     }
                 }
             }
+
+            // Weather Section
+            Section("Weather") {
+                WeatherSummaryRow(appState: appState)
+            }
+
+            Section {
+                Button(role: .destructive) {
+                    showingDeleteConfirmation = true
+                } label: {
+                    HStack {
+                        Image(systemName: "trash")
+                        Text("Delete Home")
+                    }
+                }
+            } footer: {
+                Text("This will permanently delete this home and all associated data.")
+            }
         }
-        .navigationTitle("House Profile")
+        .navigationTitle("Profile")
         .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $showingManageMembers) {
+            HouseAccessView(appState: appState)
+        }
+        .sheet(isPresented: $showingInviteMember) {
+            InviteMemberView(appState: appState)
+        }
+        .alert("Delete Home", isPresented: $showingDeleteConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Delete", role: .destructive) {
+                Task {
+                    await deleteHome()
+                }
+            }
+        } message: {
+            Text("Are you sure you want to delete \"\(appState.currentHouse?.name ?? "this home")\"? This will permanently delete all data including chat history, tasks, and vendors.")
+        }
     }
     
     private func saveProfile() {
@@ -455,48 +512,156 @@ struct HouseProfileView: View {
         saveProfile()
     }
     
-    private func deleteAllData() async {
-        guard let houseId = appState.currentHouse?.id,
-              let userId = appState.currentUser?.id else { return }
-        
+    private func deleteHome() async {
+        guard let houseId = appState.currentHouse?.id else { return }
+
         do {
-            // Delete all data from Firebase
+            // Delete all data for this house from Firebase
             try await FirebaseService.shared.deleteAllDataForHouse(houseId: houseId)
-            
-            // Create a new empty house and profile
-            let newHouse = House(
-                createdBy: userId,
-                ownerIds: [userId],
-                memberIds: []
-            )
-            
-            let newProfile = HouseProfile(
-                houseId: newHouse.id,
-                name: nil,
-                location: nil,
-                age: nil,
-                systems: [],
-                usagePattern: nil,
-                riskFactors: []
-            )
-            
-            // Save the new empty house and profile to Firebase
-            try await FirebaseService.shared.createHouse(newHouse)
-            try await FirebaseService.shared.saveHouseProfile(newProfile)
-            
-            // Update app state with the new empty house and profile
+
+            // Update app state - remove from list and clear current house
             await MainActor.run {
-                appState.setCurrentHouse(newHouse, profile: newProfile)
-                updateStateFromProfile(newProfile)
+                appState.userHouses.removeAll { $0.id == houseId }
+                appState.currentHouse = nil
+                appState.houseProfile = nil
             }
-            
-            print("✅ All data cleared. New empty house and profile created.")
+
+            print("✅ Deleted home: \(houseId)")
         } catch {
-            print("❌ Failed to clear data: \(error)")
+            print("❌ Failed to delete home: \(error)")
         }
     }
 }
 
+
+// MARK: - Weather Summary Row
+
+struct WeatherSummaryRow: View {
+    @ObservedObject var appState: AppState
+    @State private var weather: WeatherData?
+    @State private var isLoading = false
+    @State private var error: String?
+
+    var body: some View {
+        Group {
+            if isLoading {
+                HStack {
+                    ProgressView()
+                    Text("Loading weather...")
+                        .foregroundColor(.secondary)
+                }
+            } else if let weather = weather {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Image(systemName: weatherIcon(weather.current.icon))
+                            .font(.title)
+                            .foregroundColor(.blue)
+
+                        VStack(alignment: .leading) {
+                            Text("\(Int(weather.current.temperature))°F")
+                                .font(.title2)
+                                .fontWeight(.semibold)
+                            Text(weather.current.description.capitalized)
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+
+                    if !weather.forecast.isEmpty {
+                        Divider()
+                        HStack(spacing: 16) {
+                            ForEach(weather.forecast.prefix(4)) { day in
+                                VStack(spacing: 4) {
+                                    Text(day.dayName)
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                    Image(systemName: weatherIcon(day.icon))
+                                        .font(.caption)
+                                    Text("\(Int(day.tempHigh))°")
+                                        .font(.caption)
+                                        .fontWeight(.medium)
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(.vertical, 4)
+            } else if let error = error {
+                Text(error)
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+            } else {
+                Button("Load Weather") {
+                    loadWeather()
+                }
+            }
+        }
+        .onAppear {
+            if weather == nil && !isLoading {
+                loadWeather()
+            }
+        }
+    }
+
+    private func loadWeather() {
+        guard let houseId = appState.currentHouse?.id,
+              let location = appState.houseProfile?.location else {
+            error = "No location set for this home"
+            return
+        }
+
+        isLoading = true
+        error = nil
+
+        Task {
+            do {
+                var coordinates = location.coordinates
+                if coordinates == nil {
+                    coordinates = try await GeocodingService.shared.geocodeAddress(
+                        location.address,
+                        city: location.city,
+                        state: location.state,
+                        zipCode: location.zipCode
+                    )
+                }
+
+                guard let coords = coordinates else {
+                    await MainActor.run {
+                        error = "Could not determine location"
+                        isLoading = false
+                    }
+                    return
+                }
+
+                let weatherData = try await WeatherService.shared.fetchWeather(for: houseId, coordinates: coords)
+                await MainActor.run {
+                    self.weather = weatherData
+                    isLoading = false
+                }
+            } catch {
+                await MainActor.run {
+                    self.error = "Could not load weather"
+                    isLoading = false
+                }
+            }
+        }
+    }
+
+    private func weatherIcon(_ icon: String) -> String {
+        switch icon {
+        case "01d": return "sun.max.fill"
+        case "01n": return "moon.fill"
+        case "02d", "02n": return "cloud.sun.fill"
+        case "03d", "03n", "04d", "04n": return "cloud.fill"
+        case "09d", "09n": return "cloud.drizzle.fill"
+        case "10d", "10n": return "cloud.rain.fill"
+        case "11d", "11n": return "cloud.bolt.fill"
+        case "13d", "13n": return "cloud.snow.fill"
+        case "50d", "50n": return "cloud.fog.fill"
+        default: return "cloud.fill"
+        }
+    }
+}
 
 #Preview {
     HouseProfileView(appState: AppState())
