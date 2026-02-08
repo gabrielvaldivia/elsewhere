@@ -21,7 +21,11 @@ struct ContentView: View {
             } else if appState.showAuthenticationView {
                 AuthenticationView(appState: appState)
             } else if appState.isAuthenticated {
-                HomeSelectionView(appState: appState)
+                if appState.currentHouse != nil {
+                    MainTabView(appState: appState)
+                } else {
+                    HomeSelectionView(appState: appState)
+                }
             } else {
                 AuthenticationView(appState: appState)
             }

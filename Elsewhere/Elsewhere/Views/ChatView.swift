@@ -84,6 +84,19 @@ struct ChatView: View {
             }
             .navigationTitle("Chat")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        appState.currentHouse = nil
+                        appState.houseProfile = nil
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "chevron.left")
+                            Text("Homes")
+                        }
+                    }
+                }
+            }
         }
         .onChange(of: appState.houseProfile) { _, newProfile in
             viewModel.setHouseProfile(newProfile)

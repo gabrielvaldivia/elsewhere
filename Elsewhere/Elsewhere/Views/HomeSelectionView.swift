@@ -63,13 +63,8 @@ struct HomeSelectionView: View {
                         .padding(.vertical, 24)
                     } else {
                         ForEach(appState.userHouses) { house in
-                            NavigationLink {
-                                MainTabView(appState: appState)
-                                    .onAppear {
-                                        selectHome(house)
-                                    }
-                                    .navigationTitle(house.name ?? "Home")
-                                    .navigationBarTitleDisplayMode(.inline)
+                            Button {
+                                selectHome(house)
                             } label: {
                                 HStack(spacing: 12) {
                                     Image(systemName: "house.fill")
@@ -84,6 +79,10 @@ struct HomeSelectionView: View {
                                     }
 
                                     Spacer()
+
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
                                 }
                                 .padding(.vertical, 4)
                             }

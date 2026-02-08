@@ -18,7 +18,6 @@ struct HouseProfileView: View {
     @State private var age: Int?
     @State private var occupancyFrequency: OccupancyFrequency?
     @State private var typicalStayDuration: Int?
-    @State private var systemsDict: [SystemType: HouseSystem] = [:]
     @State private var squareFeet: String = ""
     @State private var showSquareFeet: Bool = false
     @State private var bedrooms: Int?
@@ -90,8 +89,6 @@ struct HouseProfileView: View {
             showLotSize = false
         }
         
-        // Load systems into dictionary
-        systemsDict = Dictionary(uniqueKeysWithValues: profile.systems.map { ($0.type, $0) })
     }
     
     private func profileContent(_ profile: HouseProfile) -> some View {
@@ -203,9 +200,7 @@ struct HouseProfileView: View {
                     }
                 }
             }
-            
-            
-            
+
             Section("Typical Stay") {
                 if let frequency = occupancyFrequency {
                     Picker("Frequency", selection: Binding(
@@ -245,53 +240,6 @@ struct HouseProfileView: View {
                 }
             }
 
-            Section("Systems") {
-                // Show existing systems from dictionary
-                ForEach(Array(systemsDict.values).sorted(by: { $0.type.rawValue < $1.type.rawValue }), id: \.id) { system in
-                    SystemDetailRow(
-                        system: system,
-                        systemBinding: Binding(
-                            get: { systemsDict[system.type] ?? system },
-                            set: { updatedSystem in
-                                systemsDict[system.type] = updatedSystem
-                                saveProfile()
-                            }
-                        ),
-                        onRemove: {
-                            systemsDict.removeValue(forKey: system.type)
-                            saveProfile()
-                        },
-                        onSave: {
-                            saveProfile()
-                        }
-                    )
-                }
-                .onDelete { indexSet in
-                    let systems = Array(systemsDict.values).sorted(by: { $0.type.rawValue < $1.type.rawValue })
-                    for index in indexSet {
-                        let system = systems[index]
-                        systemsDict.removeValue(forKey: system.type)
-                    }
-                    saveProfile()
-                }
-                
-                // Add new system button - show systems not yet added
-                if systemsDict.count < SystemType.allCases.count {
-                    Menu {
-                        ForEach(SystemType.allCases.filter { systemsDict[$0] == nil }, id: \.self) { systemType in
-                            Button(systemType.rawValue) {
-                                addSystem(systemType)
-                            }
-                        }
-                    } label: {
-                        HStack {
-                            Text("Add System")
-                        }
-                        .foregroundColor(.blue)
-                    }
-                }
-            }
-            
             if !profile.riskFactors.isEmpty {
                 Section("Risk Factors") {
                     ForEach(profile.riskFactors) { risk in
@@ -451,9 +399,6 @@ struct HouseProfileView: View {
                 }
                 profile.size = (houseSize.squareFeet != nil || houseSize.bedrooms != nil || houseSize.bathrooms != nil || houseSize.lotSize != nil) ? houseSize : nil
                 
-                // Update systems from dictionary
-                profile.systems = Array(systemsDict.values)
-                
                 profile.updatedAt = Date()
                 
                 // Save to Firebase and update app state
@@ -496,22 +441,7 @@ struct HouseProfileView: View {
             return .red
         }
     }
-    
-    private func addSystem(_ systemType: SystemType) {
-        systemsDict[systemType] = HouseSystem(type: systemType)
-        saveProfile()
-    }
-    
-    private func updateSystemInProfile(_ system: HouseSystem) {
-        systemsDict[system.type] = system
-        saveProfile()
-    }
-    
-    private func removeSystemFromProfile(_ systemType: SystemType) {
-        systemsDict.removeValue(forKey: systemType)
-        saveProfile()
-    }
-    
+
     private func deleteHome() async {
         guard let houseId = appState.currentHouse?.id else { return }
 

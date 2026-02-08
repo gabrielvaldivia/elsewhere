@@ -954,12 +954,11 @@ class FirebaseService: ObservableObject {
     func fetchVendors(houseId: String) async throws -> [Vendor] {
         let snapshot = try await db.collection("vendors")
             .whereField("houseId", isEqualTo: houseId)
-            .order(by: "name")
             .getDocuments()
 
         return try snapshot.documents.compactMap { doc in
             try decodeVendor(from: doc.data())
-        }
+        }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     func fetchVendor(vendorId: String) async throws -> Vendor {
