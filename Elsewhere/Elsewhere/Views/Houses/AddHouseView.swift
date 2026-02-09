@@ -16,8 +16,13 @@ struct AddHouseView: View {
     @State private var city = ""
     @State private var state = ""
     @State private var zipCode = ""
+    @State private var isPrimary = false
     @State private var isCreating = false
     @State private var errorMessage: String?
+
+    private var isFirstHome: Bool {
+        appState.userHouses.isEmpty
+    }
 
     var body: some View {
         NavigationStack {
@@ -37,6 +42,14 @@ struct AddHouseView: View {
                     }
                     TextField("ZIP Code", text: $zipCode)
                         .keyboardType(.numberPad)
+                }
+
+                if !isFirstHome {
+                    Section {
+                        Toggle("Primary Home", isOn: $isPrimary)
+                    } footer: {
+                        Text("Your primary home is auto-selected when you open the app.")
+                    }
                 }
 
                 if let error = errorMessage {
@@ -82,15 +95,23 @@ struct AddHouseView: View {
 
         Task {
             do {
+                let shouldBePrimary = isFirstHome || isPrimary
+
                 // Create the house
                 let house = House(
                     name: houseName.isEmpty ? nil : houseName,
                     createdBy: userId,
                     ownerIds: [userId],
-                    memberIds: []
+                    memberIds: [],
+                    isPrimary: shouldBePrimary
                 )
 
                 try await FirebaseService.shared.createHouse(house)
+
+                // If marked primary, clear others
+                if shouldBePrimary {
+                    try await FirebaseService.shared.setHousePrimary(houseId: house.id, userId: userId)
+                }
 
                 // Create initial profile
                 var location: Location?

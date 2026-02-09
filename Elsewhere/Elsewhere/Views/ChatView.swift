@@ -9,8 +9,9 @@ import SwiftUI
 
 struct ChatView: View {
     @ObservedObject var appState: AppState
+    @Environment(\.dismiss) private var dismiss
     @StateObject private var viewModel: ChatViewModel
-    
+
     @State private var inputText: String = ""
     @State private var callbackSetup: Bool = false
     
@@ -87,13 +88,9 @@ struct ChatView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
-                        appState.currentHouse = nil
-                        appState.houseProfile = nil
+                        dismiss()
                     } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "chevron.left")
-                            Text("Homes")
-                        }
+                        Image(systemName: "xmark")
                     }
                 }
             }

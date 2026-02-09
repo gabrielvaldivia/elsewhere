@@ -73,9 +73,21 @@ struct HomeSelectionView: View {
                                         .frame(width: 32)
 
                                     VStack(alignment: .leading, spacing: 2) {
-                                        Text(house.name ?? "Unnamed Home")
-                                            .font(.headline)
-                                            .foregroundColor(.primary)
+                                        HStack(spacing: 6) {
+                                            Text(house.name ?? "Unnamed Home")
+                                                .font(.headline)
+                                                .foregroundColor(.primary)
+                                            if house.isPrimary {
+                                                Text("Primary")
+                                                    .font(.caption2)
+                                                    .fontWeight(.medium)
+                                                    .padding(.horizontal, 6)
+                                                    .padding(.vertical, 2)
+                                                    .background(Color.blue.opacity(0.15))
+                                                    .foregroundColor(.blue)
+                                                    .clipShape(Capsule())
+                                            }
+                                        }
                                     }
 
                                     Spacer()
@@ -92,6 +104,16 @@ struct HomeSelectionView: View {
                                     showingDeleteConfirmation = true
                                 } label: {
                                     Label("Delete", systemImage: "trash")
+                                }
+                            }
+                            .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                                if !house.isPrimary {
+                                    Button {
+                                        setAsPrimary(house)
+                                    } label: {
+                                        Label("Primary", systemImage: "star.fill")
+                                    }
+                                    .tint(.blue)
                                 }
                             }
                         }
@@ -160,6 +182,19 @@ struct HomeSelectionView: View {
                 print("✅ Deleted home: \(house.id)")
             } catch {
                 print("❌ Failed to delete home: \(error)")
+            }
+        }
+    }
+
+    private func setAsPrimary(_ house: House) {
+        guard let userId = appState.currentUser?.id else { return }
+        Task {
+            do {
+                try await FirebaseService.shared.setHousePrimary(houseId: house.id, userId: userId)
+                await appState.loadUserHouses()
+                print("✅ Set \(house.name ?? house.id) as primary")
+            } catch {
+                print("❌ Failed to set primary: \(error)")
             }
         }
     }

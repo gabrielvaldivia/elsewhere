@@ -146,16 +146,19 @@ class AppState: ObservableObject {
 
             userHouses = houses
 
-            // Only auto-select first house if requested (e.g., on initial login)
-            if autoSelectFirst, currentHouse == nil, let firstHouse = houses.first {
-                print("🏠 loadUserHouses: Auto-selecting first house: \(firstHouse.id) (\(firstHouse.name ?? "unnamed"))")
-                currentHouse = firstHouse
-                // Load profile for the house
-                if let profile = try? await FirebaseService.shared.fetchHouseProfile(houseId: firstHouse.id) {
-                    houseProfile = profile
-                    print("🏠 loadUserHouses: Loaded profile for house")
-                } else {
-                    print("⚠️ loadUserHouses: No profile found for house \(firstHouse.id)")
+            // Only auto-select if requested (e.g., on initial login)
+            if autoSelectFirst, currentHouse == nil {
+                // Prefer the primary home; fall back to first
+                let selectedHouse = houses.first(where: { $0.isPrimary }) ?? houses.first
+                if let selectedHouse {
+                    print("🏠 loadUserHouses: Auto-selecting house: \(selectedHouse.id) (\(selectedHouse.name ?? "unnamed"), primary: \(selectedHouse.isPrimary))")
+                    currentHouse = selectedHouse
+                    if let profile = try? await FirebaseService.shared.fetchHouseProfile(houseId: selectedHouse.id) {
+                        houseProfile = profile
+                        print("🏠 loadUserHouses: Loaded profile for house")
+                    } else {
+                        print("⚠️ loadUserHouses: No profile found for house \(selectedHouse.id)")
+                    }
                 }
             } else if houses.isEmpty {
                 print("⚠️ loadUserHouses: No houses found for user")

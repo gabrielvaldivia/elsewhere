@@ -7,8 +7,9 @@
 
 import SwiftUI
 
-struct HouseProfileView: View {
+struct SettingsView: View {
     @ObservedObject var appState: AppState
+    @Environment(\.dismiss) private var dismiss
     @State private var editedProfile: HouseProfile?
     @State private var name: String = ""
     @State private var address: String = ""
@@ -24,12 +25,13 @@ struct HouseProfileView: View {
     @State private var bathrooms: Int?
     @State private var lotSize: String = ""
     @State private var showLotSize: Bool = false
+    @State private var isPrimary = false
     @State private var showingManageMembers = false
     @State private var showingInviteMember = false
     @State private var showingDeleteConfirmation = false
     
     var body: some View {
-        NavigationStack {
+        Group {
             // Always show the form fields, even if profile is nil
             if let profile = appState.houseProfile {
                 profileContent(profile)
@@ -70,8 +72,9 @@ struct HouseProfileView: View {
         age = profile.age
         occupancyFrequency = profile.usagePattern?.occupancyFrequency
         typicalStayDuration = profile.usagePattern?.typicalStayDuration
+        isPrimary = appState.currentHouse?.isPrimary ?? false
         editedProfile = profile
-        
+
         // Load house size
         if let size = profile.size {
             squareFeet = size.squareFeet.map { String($0) } ?? ""
@@ -100,6 +103,19 @@ struct HouseProfileView: View {
                     }
             }
             
+            if appState.userHouses.count > 1 {
+                Section {
+                    Toggle("Primary Home", isOn: $isPrimary)
+                        .onChange(of: isPrimary) { _, newValue in
+                            if newValue {
+                                togglePrimary()
+                            }
+                        }
+                } footer: {
+                    Text("Your primary home is auto-selected when you open the app.")
+                }
+            }
+
             Section("Location") {
                 TextField("Address", text: $address)
                     .onSubmit {
@@ -291,11 +307,6 @@ struct HouseProfileView: View {
                 }
             }
 
-            // Weather Section
-            Section("Weather") {
-                WeatherSummaryRow(appState: appState)
-            }
-
             Section {
                 Button(role: .destructive) {
                     showingDeleteConfirmation = true
@@ -309,8 +320,15 @@ struct HouseProfileView: View {
                 Text("This will permanently delete this home and all associated data.")
             }
         }
-        .navigationTitle("Profile")
+        .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Done") {
+                    dismiss()
+                }
+            }
+        }
         .sheet(isPresented: $showingManageMembers) {
             HouseAccessView(appState: appState)
         }
@@ -439,6 +457,21 @@ struct HouseProfileView: View {
             return .orange
         case .high:
             return .red
+        }
+    }
+
+    private func togglePrimary() {
+        guard let houseId = appState.currentHouse?.id,
+              let userId = appState.currentUser?.id else { return }
+        Task {
+            do {
+                try await FirebaseService.shared.setHousePrimary(houseId: houseId, userId: userId)
+                await appState.loadUserHouses()
+                print("✅ Set \(appState.currentHouse?.name ?? houseId) as primary")
+            } catch {
+                print("❌ Failed to set primary: \(error)")
+                await MainActor.run { isPrimary = false }
+            }
         }
     }
 
@@ -594,6 +627,6 @@ struct WeatherSummaryRow: View {
 }
 
 #Preview {
-    HouseProfileView(appState: AppState())
+    SettingsView(appState: AppState())
 }
 

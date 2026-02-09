@@ -19,11 +19,14 @@ struct House: Identifiable, Codable, Hashable {
     var ownerIds: [String]
     var memberIds: [String]
     
+    // Primary home flag
+    var isPrimary: Bool
+
     // Soft delete support
     var isDeleted: Bool
     var deletedAt: Date?
     var deletedBy: String?
-    
+
     init(
         id: String = UUID().uuidString,
         name: String? = nil,
@@ -32,6 +35,7 @@ struct House: Identifiable, Codable, Hashable {
         createdBy: String,
         ownerIds: [String] = [],
         memberIds: [String] = [],
+        isPrimary: Bool = false,
         isDeleted: Bool = false,
         deletedAt: Date? = nil,
         deletedBy: String? = nil
@@ -43,6 +47,7 @@ struct House: Identifiable, Codable, Hashable {
         self.createdBy = createdBy
         self.ownerIds = ownerIds
         self.memberIds = memberIds
+        self.isPrimary = isPrimary
         self.isDeleted = isDeleted
         self.deletedAt = deletedAt
         self.deletedBy = deletedBy

@@ -114,12 +114,13 @@ class FirebaseService: ObservableObject {
             "createdBy": house.createdBy,
             "ownerIds": house.ownerIds,
             "memberIds": house.memberIds,
+            "isPrimary": house.isPrimary,
             "isDeleted": house.isDeleted,
             "deletedAt": house.deletedAt != nil ? Timestamp(date: house.deletedAt!) : NSNull(),
             "deletedBy": house.deletedBy ?? NSNull()
         ])
     }
-    
+
     func fetchHouse(houseId: String) async throws -> House {
         let houseDoc = try await db.collection("houses").document(houseId).getDocument()
         guard let data = houseDoc.data() else {
@@ -182,10 +183,24 @@ class FirebaseService: ObservableObject {
             "createdBy": updatedHouse.createdBy,
             "ownerIds": updatedHouse.ownerIds,
             "memberIds": updatedHouse.memberIds,
+            "isPrimary": updatedHouse.isPrimary,
             "isDeleted": updatedHouse.isDeleted,
             "deletedAt": updatedHouse.deletedAt != nil ? Timestamp(date: updatedHouse.deletedAt!) : NSNull(),
             "deletedBy": updatedHouse.deletedBy ?? NSNull()
         ])
+    }
+
+    func setHousePrimary(houseId: String, userId: String) async throws {
+        let houses = try await fetchUserHouses(userId: userId)
+        for var house in houses {
+            if house.isPrimary && house.id != houseId {
+                house.isPrimary = false
+                try await updateHouse(house)
+            }
+        }
+        var targetHouse = try await fetchHouse(houseId: houseId)
+        targetHouse.isPrimary = true
+        try await updateHouse(targetHouse)
     }
 
     // MARK: - Invitation Operations
@@ -420,12 +435,11 @@ class FirebaseService: ObservableObject {
     func fetchMaintenanceItems(houseId: String) async throws -> [MaintenanceItem] {
         let snapshot = try await db.collection("maintenanceItems")
             .whereField("houseId", isEqualTo: houseId)
-            .order(by: "createdAt", descending: true)
             .getDocuments()
 
         return try snapshot.documents.compactMap { doc in
             try decodeMaintenanceItem(from: doc.data())
-        }
+        }.sorted { $0.createdAt > $1.createdAt }
     }
 
     func fetchPendingMaintenanceItems(houseId: String) async throws -> [MaintenanceItem] {
@@ -771,10 +785,11 @@ class FirebaseService: ObservableObject {
         let updatedAt = (data["updatedAt"] as? Timestamp)?.dateValue() ?? Date()
         let ownerIds = data["ownerIds"] as? [String] ?? []
         let memberIds = data["memberIds"] as? [String] ?? []
+        let isPrimary = data["isPrimary"] as? Bool ?? false
         let isDeleted = data["isDeleted"] as? Bool ?? false
         let deletedAt = (data["deletedAt"] as? Timestamp)?.dateValue()
         let deletedBy = data["deletedBy"] as? String
-        
+
         return House(
             id: id,
             name: name,
@@ -783,6 +798,7 @@ class FirebaseService: ObservableObject {
             createdBy: createdBy,
             ownerIds: ownerIds,
             memberIds: memberIds,
+            isPrimary: isPrimary,
             isDeleted: isDeleted,
             deletedAt: deletedAt,
             deletedBy: deletedBy
@@ -803,12 +819,18 @@ class FirebaseService: ObservableObject {
         // Decode location
         var location: Location?
         if let locationData = data["location"] as? [String: Any] {
+            var coordinates: Coordinates?
+            if let coordData = locationData["coordinates"] as? [String: Any],
+               let lat = coordData["latitude"] as? Double,
+               let lon = coordData["longitude"] as? Double {
+                coordinates = Coordinates(latitude: lat, longitude: lon)
+            }
             location = Location(
                 address: locationData["address"] as? String ?? "",
                 city: locationData["city"] as? String ?? "",
                 state: locationData["state"] as? String ?? "",
                 zipCode: locationData["zipCode"] as? String ?? "",
-                coordinates: nil // TODO: Decode coordinates if needed
+                coordinates: coordinates
             )
         }
         

@@ -377,12 +377,63 @@ class ChatToolsService {
             return ToolResult(success: false, message: "Invalid vendor category", data: nil)
         }
 
-        // For now, return a placeholder message since Google Places requires API key
-        // In production, this would call Google Places API
+        guard let profile = houseProfile,
+              let location = profile.location else {
+            return ToolResult(success: false, message: "No house location set. Add a location in Settings first.", data: nil)
+        }
+
+        var coordinates = location.coordinates
+        if coordinates == nil {
+            coordinates = try await GeocodingService.shared.geocodeAddress(
+                location.address,
+                city: location.city,
+                state: location.state,
+                zipCode: location.zipCode
+            )
+        }
+
+        guard let coords = coordinates else {
+            return ToolResult(success: false, message: "Could not determine house location", data: nil)
+        }
+
+        let locationString = "\(location.city), \(location.state)"
+        let results = try await GooglePlacesService.shared.searchNearby(
+            category: category,
+            location: locationString,
+            coordinates: coords
+        )
+
+        if results.isEmpty {
+            return ToolResult(
+                success: true,
+                message: "No \(category.rawValue) vendors found near your home.",
+                data: ["category": category.rawValue]
+            )
+        }
+
+        let vendorDescriptions = results.map { place in
+            var description = "- \(place.name)"
+            if let rating = place.rating {
+                description += " (\(String(format: "%.1f", rating))★"
+                if let count = place.ratingCount {
+                    description += ", \(count) reviews"
+                }
+                description += ")"
+            }
+            if !place.address.isEmpty {
+                description += " — \(place.address)"
+            }
+            return description
+        }
+
+        let message = "Found \(vendorDescriptions.count) \(category.rawValue) vendors near your home:\n"
+            + vendorDescriptions.joined(separator: "\n")
+            + "\n\nWould you like me to add any of these to your vendors list?"
+
         return ToolResult(
             success: true,
-            message: "To find \(category.rawValue) vendors near your home, you can search online or ask neighbors for recommendations. You can manually add any vendors you find to your contacts.",
-            data: ["category": category.rawValue]
+            message: message,
+            data: ["category": category.rawValue, "count": vendorDescriptions.count]
         )
     }
 

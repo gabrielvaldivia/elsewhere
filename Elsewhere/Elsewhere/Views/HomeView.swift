@@ -6,6 +6,34 @@
 //
 
 import SwiftUI
+import MapKit
+import CoreLocation
+
+private struct OtherHomeDistance: Identifiable {
+    let id: String
+    let name: String
+    let travelTime: TimeInterval?
+    let coordinates: Coordinates?
+}
+
+private enum SuggestionSource {
+    case weather(triggerType: WeatherTriggerType)
+    case systemAge(systemType: SystemType)
+    case serviceOverdue(systemType: SystemType)
+    case occupancy
+    case seasonal
+    case riskFactor
+}
+
+private struct Suggestion: Identifiable {
+    let id: String
+    let title: String
+    let description: String
+    let icon: String
+    let priority: MaintenancePriority
+    let relatedSystem: SystemType?
+    let source: SuggestionSource
+}
 
 struct HomeView: View {
     @ObservedObject var appState: AppState
@@ -22,29 +50,20 @@ struct HomeView: View {
     @State private var isLoadingWeather = false
     @State private var weatherError: String?
 
+    // Suggestions state
+    @State private var suggestions: [Suggestion] = []
+    @AppStorage("dismissedSuggestions") private var dismissedSuggestionsData: Data = Data()
+
+    // Map & distances state
+    @State private var resolvedCoordinates: Coordinates?
+    @State private var otherHomeDistances: [OtherHomeDistance] = []
+    @State private var isLoadingDistances = false
+
     var body: some View {
         NavigationStack {
             ZStack(alignment: .bottom) {
             ScrollView {
                 VStack(spacing: 16) {
-                    // Weather alerts (shown above pending tasks when active)
-                    if !weatherTriggers.isEmpty {
-                        WeatherAlertCard(
-                            weather: weather,
-                            triggers: weatherTriggers,
-                            actionItems: actionItems,
-                            pendingTasks: pendingTasks,
-                            onAddTask: { item in
-                                await addTaskFromAction(item)
-                            }
-                        )
-                    }
-
-                    // NWS alerts
-                    if let weather = weather, !weather.alerts.isEmpty {
-                        NWSAlertCard(alerts: weather.alerts.filter { $0.isActive })
-                    }
-
                     // Weather card
                     if let weather = weather {
                         NavigationLink(destination: WeatherDetailScreen(
@@ -55,7 +74,10 @@ struct HomeView: View {
                             onAddTask: { item in await addTaskFromAction(item) }
                         )) {
                             CardSection(title: "Weather", showChevron: true) {
-                                CompactWeatherView(weather: weather)
+                                CompactWeatherView(
+                                    weather: weather,
+                                    hasAlerts: !weatherTriggers.isEmpty || !weather.alerts.filter(\.isActive).isEmpty
+                                )
                             }
                         }
                         .buttonStyle(.plain)
@@ -79,6 +101,22 @@ struct HomeView: View {
                         }
                     }
 
+                    // Suggestions
+                    if !suggestions.isEmpty {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("Suggestions")
+                                .font(.headline)
+                                .padding(.horizontal, 4)
+                            ForEach(suggestions) { suggestion in
+                                SuggestionCardView(
+                                    suggestion: suggestion,
+                                    onAccept: { Task { await acceptSuggestion(suggestion) } },
+                                    onDismiss: { dismissSuggestionCard(suggestion) }
+                                )
+                            }
+                        }
+                    }
+
                     // Quick stats
                     if let profile = appState.houseProfile {
                         QuickStatsRow(profile: profile)
@@ -98,9 +136,6 @@ struct HomeView: View {
                             } else {
                                 VStack(spacing: 0) {
                                     ForEach(pendingTasks.prefix(3)) { item in
-                                        if item.id != pendingTasks.first?.id {
-                                            Divider()
-                                        }
                                         MaintenanceItemRow(item: item)
                                     }
                                 }
@@ -136,6 +171,26 @@ struct HomeView: View {
                         }
                     }
                     .buttonStyle(.plain)
+
+                    // Map & distances
+                    if let coords = resolvedCoordinates {
+                        CardSection(title: "Location") {
+                            VStack(spacing: 12) {
+                                Map(position: .constant(.region(MKCoordinateRegion(
+                                    center: coords.clLocation,
+                                    span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
+                                )))) {
+                                    Marker(appState.currentHouse?.name ?? "Home", coordinate: coords.clLocation)
+                                }
+                                .mapStyle(.standard)
+                                .frame(height: 180)
+                                .cornerRadius(8)
+                                .allowsHitTesting(false)
+
+                                distancesList
+                            }
+                        }
+                    }
                 }
                 .padding()
                 .padding(.bottom, 60)
@@ -201,8 +256,72 @@ struct HomeView: View {
         }
     }
 
+    @ViewBuilder
+    private var distancesList: some View {
+        if isLoadingDistances {
+            HStack {
+                ProgressView()
+                Text("Calculating distances...")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+            }
+        } else if !otherHomeDistances.isEmpty {
+            VStack(spacing: 0) {
+                ForEach(otherHomeDistances) { home in
+                    if home.id != otherHomeDistances.first?.id {
+                        Divider()
+                    }
+                    Button {
+                        openDirections(from: home)
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: home.id == "current-location" ? "location.fill" : "arrow.triangle.turn.up.right.diamond.fill")
+                                .font(.subheadline)
+                                .foregroundColor(.blue)
+                                .frame(width: 20)
+                            Text(home.name)
+                                .font(.subheadline)
+                                .foregroundColor(.primary)
+                            Spacer()
+                            if let time = home.travelTime {
+                                Text(formatTravelTime(time))
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                            } else {
+                                Text("—")
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                            }
+                            Image(systemName: "chevron.right")
+                                .font(.caption2)
+                                .fontWeight(.semibold)
+                                .foregroundStyle(.tertiary)
+                        }
+                        .padding(.vertical, 6)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
     private func loadData() async {
         guard let houseId = appState.currentHouse?.id else { return }
+
+        // Reset stale state
+        weather = nil
+        weatherTriggers = []
+        actionItems = []
+        weatherError = nil
+        resolvedCoordinates = nil
+        otherHomeDistances = []
+
+        // Ensure profile is loaded for this house
+        if appState.houseProfile?.houseId != houseId {
+            if let profile = try? await FirebaseService.shared.fetchHouseProfile(houseId: houseId) {
+                appState.houseProfile = profile
+            }
+        }
 
         isLoading = true
         do {
@@ -216,8 +335,10 @@ struct HomeView: View {
         }
         isLoading = false
 
-        // Load weather data
+        // Resolve coordinates and load weather first, then suggestions, then distances
         await loadWeather()
+        suggestions = generateSuggestions()
+        await loadDistances()
     }
 
     private func loadWeather() async {
@@ -247,6 +368,8 @@ struct HomeView: View {
                 return
             }
 
+            resolvedCoordinates = coords
+
             let weatherData = try await WeatherService.shared.fetchWeather(for: houseId, coordinates: coords)
             weather = weatherData
 
@@ -260,6 +383,354 @@ struct HomeView: View {
             weatherError = "Could not load weather"
         }
         isLoadingWeather = false
+    }
+
+    private func loadDistances() async {
+        guard let homeCoords = resolvedCoordinates else { return }
+
+        isLoadingDistances = true
+        var results: [OtherHomeDistance] = []
+
+        // Current device location
+        let locationManager = CLLocationManager()
+        if let deviceLocation = locationManager.location {
+            let request = MKDirections.Request()
+            request.source = MKMapItem(location: deviceLocation, address: nil)
+            request.destination = MKMapItem(location: CLLocation(latitude: homeCoords.latitude, longitude: homeCoords.longitude), address: nil)
+            request.transportType = .automobile
+            let directions = MKDirections(request: request)
+            let travelTime = (try? await directions.calculate())?.routes.first?.expectedTravelTime
+            results.append(OtherHomeDistance(
+                id: "current-location",
+                name: "Current Location",
+                travelTime: travelTime,
+                coordinates: Coordinates(latitude: deviceLocation.coordinate.latitude, longitude: deviceLocation.coordinate.longitude)
+            ))
+        }
+
+        // Other homes
+        let otherHouses = appState.userHouses.filter { $0.id != appState.currentHouse?.id }
+        for house in otherHouses {
+            var coords: Coordinates?
+            if let profile = try? await FirebaseService.shared.fetchHouseProfile(houseId: house.id) {
+                if let loc = profile.location {
+                    coords = loc.coordinates
+                    if coords == nil {
+                        coords = try? await GeocodingService.shared.geocodeAddress(
+                            loc.address, city: loc.city, state: loc.state, zipCode: loc.zipCode
+                        )
+                    }
+                }
+            }
+
+            var travelTime: TimeInterval?
+            if let destCoords = coords {
+                let request = MKDirections.Request()
+                request.source = MKMapItem(location: CLLocation(latitude: destCoords.latitude, longitude: destCoords.longitude), address: nil)
+                request.destination = MKMapItem(location: CLLocation(latitude: homeCoords.latitude, longitude: homeCoords.longitude), address: nil)
+                request.transportType = .automobile
+                let directions = MKDirections(request: request)
+                if let response = try? await directions.calculate() {
+                    travelTime = response.routes.first?.expectedTravelTime
+                }
+            }
+
+            results.append(OtherHomeDistance(
+                id: house.id,
+                name: house.name ?? "Home",
+                travelTime: travelTime,
+                coordinates: coords
+            ))
+        }
+
+        otherHomeDistances = results
+        isLoadingDistances = false
+    }
+
+    private func formatTravelTime(_ seconds: TimeInterval) -> String {
+        let totalMinutes = Int(seconds) / 60
+        let hours = totalMinutes / 60
+        let minutes = totalMinutes % 60
+        if hours > 0 {
+            return "\(hours)h \(minutes)m drive"
+        }
+        return "\(minutes)m drive"
+    }
+
+    private func openDirections(from entry: OtherHomeDistance) {
+        guard let homeCoords = resolvedCoordinates else { return }
+        let destination = MKMapItem(location: CLLocation(latitude: homeCoords.latitude, longitude: homeCoords.longitude), address: nil)
+        destination.name = appState.currentHouse?.name ?? "Home"
+
+        let source: MKMapItem
+        if entry.id == "current-location" {
+            source = .forCurrentLocation()
+        } else if let coords = entry.coordinates {
+            source = MKMapItem(location: CLLocation(latitude: coords.latitude, longitude: coords.longitude), address: nil)
+            source.name = entry.name
+        } else {
+            return
+        }
+
+        MKMapItem.openMaps(with: [source, destination], launchOptions: [
+            MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeDriving
+        ])
+    }
+
+    // MARK: - Suggestion Persistence
+
+    private func dismissedSuggestionIDs(for houseId: String) -> Set<String> {
+        guard !dismissedSuggestionsData.isEmpty,
+              let dict = try? JSONDecoder().decode([String: [String]].self, from: dismissedSuggestionsData) else {
+            return []
+        }
+        return Set(dict[houseId] ?? [])
+    }
+
+    private func persistDismissal(_ id: String, for houseId: String) {
+        var dict: [String: [String]] = [:]
+        if !dismissedSuggestionsData.isEmpty,
+           let existing = try? JSONDecoder().decode([String: [String]].self, from: dismissedSuggestionsData) {
+            dict = existing
+        }
+        var ids = dict[houseId] ?? []
+        if !ids.contains(id) {
+            ids.append(id)
+        }
+        dict[houseId] = ids
+        if let encoded = try? JSONEncoder().encode(dict) {
+            dismissedSuggestionsData = encoded
+        }
+    }
+
+    // MARK: - Suggestion Generation
+
+    private func generateSuggestions() -> [Suggestion] {
+        guard let houseId = appState.currentHouse?.id else { return [] }
+
+        let dismissed = dismissedSuggestionIDs(for: houseId)
+        let pendingTitles = Set(pendingTasks.map(\.title))
+        var results: [Suggestion] = []
+
+        // Weather suggestions
+        for item in actionItems {
+            let suggestionId = "weather-\(item.triggerType.rawValue)-\(item.title)"
+            // Skip if already a pending task with same weather trigger
+            let alreadyPending = pendingTasks.contains { task in
+                task.isWeatherTriggered &&
+                task.weatherTrigger?.type == item.triggerType &&
+                task.title == item.title &&
+                task.status == .pending
+            }
+            if !alreadyPending {
+                results.append(Suggestion(
+                    id: suggestionId,
+                    title: item.title,
+                    description: item.description,
+                    icon: item.icon,
+                    priority: item.priority,
+                    relatedSystem: item.relatedSystem,
+                    source: .weather(triggerType: item.triggerType)
+                ))
+            }
+        }
+
+        // Profile-based suggestions
+        if let profile = appState.houseProfile {
+            // System age rules
+            for system in profile.systems {
+                if let age = system.age {
+                    switch system.type {
+                    case .heating, .cooling:
+                        if age >= 15 {
+                            results.append(Suggestion(
+                                id: "systemAge-\(system.type.rawValue)-HVAC inspection",
+                                title: "Schedule HVAC inspection",
+                                description: "Your \(system.type.rawValue.lowercased()) system is \(age) years old.",
+                                icon: "magnifyingglass",
+                                priority: .high,
+                                relatedSystem: system.type,
+                                source: .systemAge(systemType: system.type)
+                            ))
+                        }
+                    case .roofing:
+                        if age >= 20 {
+                            results.append(Suggestion(
+                                id: "systemAge-\(system.type.rawValue)-Roof inspection",
+                                title: "Consider roof inspection",
+                                description: "Your roof is \(age) years old — most last 20–25 years.",
+                                icon: "house.fill",
+                                priority: .high,
+                                relatedSystem: .roofing,
+                                source: .systemAge(systemType: .roofing)
+                            ))
+                        }
+                    case .water:
+                        if age >= 10 {
+                            results.append(Suggestion(
+                                id: "systemAge-\(system.type.rawValue)-Water heater replacement",
+                                title: "Plan water heater replacement",
+                                description: "Your water heater is \(age) years old — most last 10–15 years.",
+                                icon: "drop.fill",
+                                priority: .medium,
+                                relatedSystem: .water,
+                                source: .systemAge(systemType: .water)
+                            ))
+                        }
+                    default:
+                        break
+                    }
+                }
+
+                // Service overdue
+                if let lastServiced = system.lastServiced {
+                    let yearsAgo = Calendar.current.dateComponents([.year], from: lastServiced, to: Date()).year ?? 0
+                    if yearsAgo > 2 {
+                        results.append(Suggestion(
+                            id: "serviceOverdue-\(system.type.rawValue)",
+                            title: "\(system.type.rawValue) service overdue",
+                            description: "Last serviced \(yearsAgo) years ago.",
+                            icon: "wrench.fill",
+                            priority: .medium,
+                            relatedSystem: system.type,
+                            source: .serviceOverdue(systemType: system.type)
+                        ))
+                    }
+                }
+            }
+
+            // Occupancy rules
+            if let freq = profile.usagePattern?.occupancyFrequency,
+               freq == .rarely || freq == .seasonally {
+                results.append(Suggestion(
+                    id: "occupancy-pest",
+                    title: "Check for pest activity",
+                    description: "This home is occupied \(freq.rawValue.lowercased()).",
+                    icon: "ant.fill",
+                    priority: .medium,
+                    relatedSystem: nil,
+                    source: .occupancy
+                ))
+                results.append(Suggestion(
+                    id: "occupancy-water",
+                    title: "Run water to prevent stagnation",
+                    description: "Pipes can stagnate in \(freq.rawValue.lowercased()) occupied homes.",
+                    icon: "drop.fill",
+                    priority: .low,
+                    relatedSystem: .plumbing,
+                    source: .occupancy
+                ))
+            }
+
+            // Seasonal rules
+            let currentMonth = Calendar.current.component(.month, from: Date())
+            let systemTypes = Set(profile.systems.map(\.type))
+
+            // Fall: Sep–Nov
+            if (9...11).contains(currentMonth) && systemTypes.contains(.heating) {
+                results.append(Suggestion(
+                    id: "seasonal-furnace",
+                    title: "Schedule furnace tune-up",
+                    description: "Fall is the best time to service heating before winter.",
+                    icon: "flame.fill",
+                    priority: .medium,
+                    relatedSystem: .heating,
+                    source: .seasonal
+                ))
+            }
+            // Spring: Mar–May
+            if (3...5).contains(currentMonth) {
+                if systemTypes.contains(.cooling) {
+                    results.append(Suggestion(
+                        id: "seasonal-ac",
+                        title: "Schedule AC tune-up",
+                        description: "Spring is the best time to service cooling before summer.",
+                        icon: "snowflake",
+                        priority: .medium,
+                        relatedSystem: .cooling,
+                        source: .seasonal
+                    ))
+                }
+                if systemTypes.contains(.landscaping) {
+                    results.append(Suggestion(
+                        id: "seasonal-irrigation",
+                        title: "Inspect irrigation and drainage",
+                        description: "Spring is the right time to check outdoor water systems.",
+                        icon: "drop.triangle.fill",
+                        priority: .low,
+                        relatedSystem: .landscaping,
+                        source: .seasonal
+                    ))
+                }
+            }
+
+            // Risk factor: winterExposure, medium+
+            for risk in profile.riskFactors {
+                if risk.type == .winterExposure && (risk.severity == .medium || risk.severity == .high) {
+                    results.append(Suggestion(
+                        id: "risk-winterize",
+                        title: "Winterize the property",
+                        description: "This property has \(risk.severity.rawValue.lowercased()) winter exposure risk.",
+                        icon: "thermometer.snowflake",
+                        priority: .high,
+                        relatedSystem: nil,
+                        source: .riskFactor
+                    ))
+                }
+            }
+        }
+
+        // Filter: remove dismissed and already-pending tasks
+        return results
+            .filter { !dismissed.contains($0.id) }
+            .filter { !pendingTitles.contains($0.title) }
+            .sorted { $0.priority.sortOrder < $1.priority.sortOrder }
+    }
+
+    // MARK: - Suggestion Actions
+
+    private func acceptSuggestion(_ suggestion: Suggestion) async {
+        guard let houseId = appState.currentHouse?.id,
+              let userId = appState.currentUser?.id else { return }
+
+        var isWeatherTriggered = false
+        var weatherTrigger: WeatherTrigger?
+        if case .weather(let triggerType) = suggestion.source {
+            isWeatherTriggered = true
+            weatherTrigger = WeatherTrigger(type: triggerType)
+        }
+
+        let item = MaintenanceItem(
+            houseId: houseId,
+            title: suggestion.title,
+            description: suggestion.description,
+            priority: suggestion.priority,
+            status: .pending,
+            relatedSystem: suggestion.relatedSystem,
+            isWeatherTriggered: isWeatherTriggered,
+            weatherTrigger: weatherTrigger,
+            createdBy: userId
+        )
+
+        do {
+            try await FirebaseService.shared.saveMaintenanceItem(item)
+            if let tasks = try? await FirebaseService.shared.fetchPendingMaintenanceItems(houseId: houseId) {
+                pendingTasks = tasks
+            }
+            withAnimation {
+                suggestions.removeAll { $0.id == suggestion.id }
+            }
+        } catch {
+            print("Failed to save suggestion as task: \(error)")
+        }
+    }
+
+    private func dismissSuggestionCard(_ suggestion: Suggestion) {
+        guard let houseId = appState.currentHouse?.id else { return }
+        persistDismissal(suggestion.id, for: houseId)
+        withAnimation {
+            suggestions.removeAll { $0.id == suggestion.id }
+        }
     }
 
     private func addTaskFromAction(_ actionItem: WeatherActionItem) async {
@@ -291,6 +762,128 @@ struct HomeView: View {
     }
 
 
+}
+
+// MARK: - Suggestion Card View
+
+private struct SuggestionCardView: View {
+    let suggestion: Suggestion
+    let onAccept: () -> Void
+    let onDismiss: () -> Void
+
+    @State private var offset: CGFloat = 0
+    @State private var isRemoving = false
+
+    private var priorityColor: Color {
+        switch suggestion.priority {
+        case .urgent: return .red
+        case .high: return .orange
+        case .medium: return .yellow
+        case .low: return .blue
+        }
+    }
+
+    private var priorityDotColor: Color {
+        switch suggestion.priority {
+        case .urgent: return .red
+        case .high: return .orange
+        case .medium: return .yellow
+        case .low: return .blue
+        }
+    }
+
+    var body: some View {
+        ZStack {
+            // Background hints
+            HStack {
+                if offset > 0 {
+                    HStack {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.green)
+                            .font(.title2)
+                        Spacer()
+                    }
+                    .padding(.leading, 20)
+                }
+                if offset < 0 {
+                    HStack {
+                        Spacer()
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.red)
+                            .font(.title2)
+                    }
+                    .padding(.trailing, 20)
+                }
+            }
+
+            // Card
+            HStack(spacing: 12) {
+                // Leading icon
+                Circle()
+                    .fill(priorityColor.opacity(0.15))
+                    .frame(width: 36, height: 36)
+                    .overlay(
+                        Image(systemName: suggestion.icon)
+                            .font(.subheadline)
+                            .foregroundColor(priorityColor)
+                    )
+
+                // Center text
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(suggestion.title)
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                    Text(suggestion.description)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(2)
+                }
+
+                Spacer()
+
+                // Priority dot
+                Circle()
+                    .fill(priorityDotColor)
+                    .frame(width: 8, height: 8)
+            }
+            .padding()
+            .background(Color(.systemGray6))
+            .cornerRadius(12)
+            .offset(x: offset)
+            .gesture(
+                DragGesture(minimumDistance: 20)
+                    .onChanged { value in
+                        if !isRemoving {
+                            offset = value.translation.width
+                        }
+                    }
+                    .onEnded { value in
+                        guard !isRemoving else { return }
+                        if value.translation.width > 100 {
+                            isRemoving = true
+                            withAnimation(.easeIn(duration: 0.2)) {
+                                offset = UIScreen.main.bounds.width
+                            }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                                onAccept()
+                            }
+                        } else if value.translation.width < -100 {
+                            isRemoving = true
+                            withAnimation(.easeIn(duration: 0.2)) {
+                                offset = -UIScreen.main.bounds.width
+                            }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                                onDismiss()
+                            }
+                        } else {
+                            withAnimation(.spring()) {
+                                offset = 0
+                            }
+                        }
+                    }
+            )
+        }
+    }
 }
 
 // MARK: - Weather Alert Card
@@ -492,6 +1085,7 @@ struct NWSAlertCard: View {
 
 struct CompactWeatherView: View {
     let weather: WeatherData
+    var hasAlerts: Bool = false
 
     var body: some View {
         HStack {
@@ -500,9 +1094,16 @@ struct CompactWeatherView: View {
                 .foregroundColor(.blue)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(weather.current.temperatureDisplay)
-                    .font(.title2)
-                    .fontWeight(.semibold)
+                HStack(spacing: 6) {
+                    Text(weather.current.temperatureDisplay)
+                        .font(.title2)
+                        .fontWeight(.semibold)
+                    if hasAlerts {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.subheadline)
+                            .foregroundColor(.orange)
+                    }
+                }
                 Text(weather.current.description.capitalized)
                     .font(.subheadline)
                     .foregroundColor(.secondary)
@@ -543,13 +1144,25 @@ struct WeatherDetailScreen: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
+                // Weather triggers with action items
+                if !triggers.isEmpty, let onAddTask = onAddTask {
+                    WeatherAlertCard(
+                        weather: weather,
+                        triggers: triggers,
+                        actionItems: actionItems,
+                        pendingTasks: pendingTasks,
+                        onAddTask: onAddTask
+                    )
+                }
+
+                // NWS alerts
+                if !weather.alerts.isEmpty {
+                    NWSAlertCard(alerts: weather.alerts)
+                }
+
                 // Current conditions
                 CardSection(title: "Current") {
                     HStack {
-                        Image(systemName: weather.current.weatherIcon)
-                            .font(.system(size: 48))
-                            .foregroundColor(.blue)
-
                         VStack(alignment: .leading, spacing: 2) {
                             Text(weather.current.temperatureDisplay)
                                 .font(.largeTitle)
@@ -560,6 +1173,10 @@ struct WeatherDetailScreen: View {
                         }
 
                         Spacer()
+
+                        Image(systemName: weather.current.weatherIcon)
+                            .font(.system(size: 48))
+                            .foregroundColor(.blue)
                     }
 
                     HStack(spacing: 24) {
@@ -617,22 +1234,6 @@ struct WeatherDetailScreen: View {
                             }
                         }
                     }
-                }
-
-                // Weather triggers with action items
-                if !triggers.isEmpty, let onAddTask = onAddTask {
-                    WeatherAlertCard(
-                        weather: weather,
-                        triggers: triggers,
-                        actionItems: actionItems,
-                        pendingTasks: pendingTasks,
-                        onAddTask: onAddTask
-                    )
-                }
-
-                // NWS alerts
-                if !weather.alerts.isEmpty {
-                    NWSAlertCard(alerts: weather.alerts)
                 }
             }
             .padding()

@@ -162,16 +162,10 @@ struct MaintenanceItemRow: View {
                     .strikethrough(item.status == .completed)
                     .foregroundColor(item.status == .completed ? .secondary : .primary)
 
-                HStack {
-                    Text(item.category.rawValue)
+                if let dueDate = item.dueDate {
+                    Text("Due \(dueDate.formatted(date: .abbreviated, time: .omitted))")
                         .font(.caption)
-                        .foregroundColor(.secondary)
-
-                    if let dueDate = item.dueDate {
-                        Text("Due \(dueDate.formatted(date: .abbreviated, time: .omitted))")
-                            .font(.caption)
-                            .foregroundColor(isOverdue ? .red : .secondary)
-                    }
+                        .foregroundColor(isOverdue ? .red : .secondary)
                 }
             }
 
