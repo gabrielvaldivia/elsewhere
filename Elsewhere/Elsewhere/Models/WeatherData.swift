@@ -123,6 +123,16 @@ struct WeatherAlert: Codable, Identifiable {
     }
 }
 
+struct WeatherActionItem: Identifiable {
+    let id = UUID().uuidString
+    let title: String
+    let description: String
+    let priority: MaintenancePriority
+    let triggerType: WeatherTriggerType
+    let relatedSystem: SystemType?
+    let icon: String   // SF Symbol name
+}
+
 enum AlertSeverity: String, Codable {
     case advisory = "Advisory"
     case watch = "Watch"

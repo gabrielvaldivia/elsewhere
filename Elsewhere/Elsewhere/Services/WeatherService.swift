@@ -296,6 +296,179 @@ class WeatherService: ObservableObject {
         return triggers
     }
 
+    func generateActionItems(triggers: [WeatherTriggerType], systems: [HouseSystem]) -> [WeatherActionItem] {
+        var items: [WeatherActionItem] = []
+        let systemTypes = Set(systems.map { $0.type })
+
+        for trigger in triggers {
+            switch trigger {
+            case .freezeWarning:
+                items.append(WeatherActionItem(
+                    title: "Disconnect outdoor hoses",
+                    description: "Disconnect and drain all outdoor hoses to prevent pipe damage from freezing.",
+                    priority: .high,
+                    triggerType: .freezeWarning,
+                    relatedSystem: nil,
+                    icon: "spigot.fill"
+                ))
+                if systemTypes.contains(.plumbing) || systemTypes.contains(.water) {
+                    items.append(WeatherActionItem(
+                        title: "Drip faucets",
+                        description: "Let faucets drip slowly to prevent pipes from freezing overnight.",
+                        priority: .high,
+                        triggerType: .freezeWarning,
+                        relatedSystem: .plumbing,
+                        icon: "drop.fill"
+                    ))
+                }
+                if systemTypes.contains(.landscaping) {
+                    items.append(WeatherActionItem(
+                        title: "Cover plants",
+                        description: "Cover sensitive plants and bring potted plants indoors before the freeze.",
+                        priority: .medium,
+                        triggerType: .freezeWarning,
+                        relatedSystem: .landscaping,
+                        icon: "leaf.fill"
+                    ))
+                }
+                if systemTypes.contains(.heating) {
+                    items.append(WeatherActionItem(
+                        title: "Verify heat is running",
+                        description: "Confirm your heating system is operational and set to an appropriate temperature.",
+                        priority: .high,
+                        triggerType: .freezeWarning,
+                        relatedSystem: .heating,
+                        icon: "thermometer.sun.fill"
+                    ))
+                }
+
+            case .highWind:
+                items.append(WeatherActionItem(
+                    title: "Secure outdoor furniture",
+                    description: "Move or secure loose outdoor furniture, decorations, and trash cans.",
+                    priority: .high,
+                    triggerType: .highWind,
+                    relatedSystem: nil,
+                    icon: "wind"
+                ))
+                if systemTypes.contains(.landscaping) {
+                    items.append(WeatherActionItem(
+                        title: "Check dead branches",
+                        description: "Inspect trees for dead branches that could fall during high winds.",
+                        priority: .medium,
+                        triggerType: .highWind,
+                        relatedSystem: .landscaping,
+                        icon: "tree.fill"
+                    ))
+                }
+                if systemTypes.contains(.power) {
+                    items.append(WeatherActionItem(
+                        title: "Ensure generator has fuel",
+                        description: "Check that your backup generator is fueled and ready in case of power outage.",
+                        priority: .medium,
+                        triggerType: .highWind,
+                        relatedSystem: .power,
+                        icon: "bolt.fill"
+                    ))
+                }
+                if systemTypes.contains(.roofing) {
+                    items.append(WeatherActionItem(
+                        title: "Inspect roof after storm",
+                        description: "Check roof for damage or loose shingles after the wind event passes.",
+                        priority: .medium,
+                        triggerType: .highWind,
+                        relatedSystem: .roofing,
+                        icon: "house.fill"
+                    ))
+                }
+
+            case .snowStorm:
+                items.append(WeatherActionItem(
+                    title: "Stock supplies",
+                    description: "Ensure you have salt, shovels, and emergency supplies ready for the storm.",
+                    priority: .high,
+                    triggerType: .snowStorm,
+                    relatedSystem: nil,
+                    icon: "snowflake"
+                ))
+                if systemTypes.contains(.plumbing) {
+                    items.append(WeatherActionItem(
+                        title: "Know water shutoff location",
+                        description: "Locate and verify access to your main water shutoff valve in case of a pipe burst.",
+                        priority: .medium,
+                        triggerType: .snowStorm,
+                        relatedSystem: .plumbing,
+                        icon: "wrench.fill"
+                    ))
+                }
+                if systemTypes.contains(.heating) {
+                    items.append(WeatherActionItem(
+                        title: "Check fuel supply",
+                        description: "Verify your heating fuel level is sufficient for an extended cold snap.",
+                        priority: .high,
+                        triggerType: .snowStorm,
+                        relatedSystem: .heating,
+                        icon: "flame.fill"
+                    ))
+                }
+
+            case .heavyRain:
+                items.append(WeatherActionItem(
+                    title: "Clear gutters and downspouts",
+                    description: "Remove debris from gutters and ensure downspouts are directing water away from foundation.",
+                    priority: .high,
+                    triggerType: .heavyRain,
+                    relatedSystem: nil,
+                    icon: "cloud.rain.fill"
+                ))
+                if systemTypes.contains(.foundation) {
+                    items.append(WeatherActionItem(
+                        title: "Check for foundation leaks",
+                        description: "Inspect basement and foundation walls for signs of water intrusion during heavy rain.",
+                        priority: .high,
+                        triggerType: .heavyRain,
+                        relatedSystem: .foundation,
+                        icon: "house.fill"
+                    ))
+                }
+                if systemTypes.contains(.landscaping) {
+                    items.append(WeatherActionItem(
+                        title: "Check drainage",
+                        description: "Ensure yard drainage paths are clear and water flows away from the house.",
+                        priority: .medium,
+                        triggerType: .heavyRain,
+                        relatedSystem: .landscaping,
+                        icon: "arrow.down.to.line"
+                    ))
+                }
+
+            case .heatWave:
+                if systemTypes.contains(.cooling) {
+                    items.append(WeatherActionItem(
+                        title: "Check AC filters",
+                        description: "Inspect and replace AC filters to ensure maximum cooling efficiency during the heat wave.",
+                        priority: .high,
+                        triggerType: .heatWave,
+                        relatedSystem: .cooling,
+                        icon: "air.conditioner.horizontal.fill"
+                    ))
+                }
+                if systemTypes.contains(.landscaping) {
+                    items.append(WeatherActionItem(
+                        title: "Water plants morning/evening",
+                        description: "Water plants early morning or late evening to reduce evaporation during extreme heat.",
+                        priority: .medium,
+                        triggerType: .heatWave,
+                        relatedSystem: .landscaping,
+                        icon: "drop.fill"
+                    ))
+                }
+            }
+        }
+
+        return items
+    }
+
     func generateMaintenanceAlerts(triggers: [WeatherTriggerType]) -> [(title: String, description: String, priority: MaintenancePriority)] {
         return triggers.map { trigger in
             switch trigger {

@@ -16,61 +16,61 @@ struct MaintenanceView: View {
     @State private var errorMessage: String?
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                // Filter picker
-                Picker("Filter", selection: $selectedFilter) {
-                    ForEach(MaintenanceFilter.allCases, id: \.self) { filter in
-                        Text(filter.rawValue).tag(filter)
-                    }
+        VStack(spacing: 0) {
+            // Filter picker
+            Picker("Filter", selection: $selectedFilter) {
+                ForEach(MaintenanceFilter.allCases, id: \.self) { filter in
+                    Text(filter.rawValue).tag(filter)
                 }
-                .pickerStyle(.segmented)
-                .padding()
+            }
+            .pickerStyle(.segmented)
+            .padding()
 
-                // Items list
-                if isLoading {
-                    Spacer()
-                    ProgressView()
-                    Spacer()
-                } else if filteredItems.isEmpty {
-                    Spacer()
-                    EmptyMaintenanceView(filter: selectedFilter)
-                    Spacer()
-                } else {
-                    List {
-                        ForEach(filteredItems) { item in
-                            NavigationLink {
-                                MaintenanceDetailView(appState: appState, item: item) {
-                                    Task {
-                                        await loadItems()
-                                    }
+            // Items list
+            if isLoading {
+                Spacer()
+                ProgressView()
+                Spacer()
+            } else if filteredItems.isEmpty {
+                Spacer()
+                EmptyMaintenanceView(filter: selectedFilter)
+                Spacer()
+            } else {
+                List {
+                    ForEach(filteredItems) { item in
+                        NavigationLink {
+                            MaintenanceDetailView(appState: appState, item: item) {
+                                Task {
+                                    await loadItems()
                                 }
-                            } label: {
-                                MaintenanceItemRow(item: item)
                             }
+                        } label: {
+                            MaintenanceItemRow(item: item, onToggleComplete: {
+                                toggleComplete(item)
+                            })
                         }
-                        .onDelete(perform: deleteItems)
                     }
-                    .listStyle(.plain)
+                    .onDelete(perform: deleteItems)
+                }
+                .listStyle(.plain)
+            }
+        }
+        .navigationTitle("Maintenance")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showAddItem = true
+                } label: {
+                    Image(systemName: "plus")
                 }
             }
-            .navigationTitle("Maintenance")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        showAddItem = true
-                    } label: {
-                        Image(systemName: "plus")
-                    }
-                }
-            }
-            .task {
-                await loadItems()
-            }
-            .refreshable {
-                await loadItems()
-            }
+        }
+        .task {
+            await loadItems()
+        }
+        .refreshable {
+            await loadItems()
         }
         .sheet(isPresented: $showAddItem) {
             AddMaintenanceView(appState: appState) {
@@ -107,6 +107,17 @@ struct MaintenanceView: View {
         }
     }
 
+    private func toggleComplete(_ item: MaintenanceItem) {
+        Task {
+            var updated = item
+            updated.status = item.status == .completed ? .pending : .completed
+            updated.completedAt = updated.status == .completed ? Date() : nil
+            updated.updatedAt = Date()
+            try? await FirebaseService.shared.saveMaintenanceItem(updated)
+            await loadItems()
+        }
+    }
+
     private func deleteItems(at offsets: IndexSet) {
         let itemsToDelete = offsets.map { filteredItems[$0] }
 
@@ -131,18 +142,25 @@ enum MaintenanceFilter: String, CaseIterable {
 
 struct MaintenanceItemRow: View {
     let item: MaintenanceItem
+    var onToggleComplete: (() -> Void)?
 
     var body: some View {
         HStack(spacing: 12) {
-            // Category icon
-            Image(systemName: item.category.icon)
-                .foregroundColor(priorityColor)
-                .frame(width: 24)
+            // Radio button
+            Button {
+                onToggleComplete?()
+            } label: {
+                Image(systemName: item.status == .completed ? "checkmark.circle.fill" : "circle")
+                    .font(.title3)
+                    .foregroundColor(item.status == .completed ? .green : .secondary)
+            }
+            .buttonStyle(.plain)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(item.title)
                     .font(.headline)
                     .strikethrough(item.status == .completed)
+                    .foregroundColor(item.status == .completed ? .secondary : .primary)
 
                 HStack {
                     Text(item.category.rawValue)

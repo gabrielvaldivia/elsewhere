@@ -38,27 +38,7 @@ struct MainTabView: View {
     @ObservedObject var appState: AppState
 
     var body: some View {
-        TabView {
-            ChatView(appState: appState)
-                .tabItem {
-                    Label("Chat", systemImage: "message.fill")
-                }
-
-            MaintenanceView(appState: appState)
-                .tabItem {
-                    Label("Tasks", systemImage: "checklist")
-                }
-
-            VendorsView(appState: appState)
-                .tabItem {
-                    Label("Vendors", systemImage: "person.2.fill")
-                }
-
-            HouseProfileView(appState: appState)
-                .tabItem {
-                    Label("Profile", systemImage: "house.fill")
-                }
-        }
+        HomeView(appState: appState)
     }
 }
 
